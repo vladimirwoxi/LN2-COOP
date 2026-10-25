@@ -33,6 +33,23 @@
 
 GitHub-аккаунт уже авторизован: `gh auth status` → `vladimirwoxi` (scope `repo`). Клонировать: `gh repo clone vladimirwoxi/LN2-COOP`.
 
+## Начало новой сессии (порядок действий)
+
+1. `gh repo clone vladimirwoxi/LN2-COOP` (или `git pull` в существующей копии) — **репозиторий канонический**, рабочая копия в `C:\...\default-workspace\ln2coop` устарела и оставлена только как история.
+2. Прочитать этот файл и, если нужно, `TECHNICAL.md`.
+3. Проверить окружение командой ниже.
+4. Дальше — по «Следующим шагам».
+
+## Восстановление с нуля (игра без UE4SS / сломанная установка)
+
+```powershell
+gh release download v0.3 -R vladimirwoxi/LN2-COOP -p ue4ss-patched.zip -D $env:TEMP
+Expand-Archive "$env:TEMP\ue4ss-patched.zip" -DestinationPath "G:\Little Nightmares 2\Helios\Binaries\Win64" -Force
+powershell -ExecutionPolicy Bypass -File tools\install.ps1 -GameDir "G:\Little Nightmares 2"
+```
+
+`ue4ss-patched.zip` (15 МБ) — это `dwmapi.dll` + `ue4ss\` с уже пропатченным `UE4SS.dll` и правильным `UE4SS-settings.ini`, без дампов и `.orig`. Проверено: после распаковки хеш DLL совпадает с `A5757099…FA00A33`.
+
 ## Быстрая проверка, что окружение цело
 
 ```powershell
