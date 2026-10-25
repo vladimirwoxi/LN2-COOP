@@ -1,6 +1,10 @@
 LN2Coop 0.3 — Little Nightmares II, split-screen co-op on one PC
 ==============================================================
 
+Репозиторий проекта (private): https://github.com/vladimirwoxi/LN2-COOP
+Там же: docs\HANDOFF.md (состояние проекта), docs\TECHNICAL.md (патч UE4SS),
+релизы с готовыми архивами и скрипт установки.
+
 Что это
 -------
 Кооператив на одном ПК: два игрока, разделённый экран, два геймпада.
