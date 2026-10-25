@@ -1,0 +1,17 @@
+# game/runtime artifacts that must never be committed
+*.log
+*.dmp
+UE4SS.dll
+UE4SS.dll.orig
+dwmapi.dll
+UE4SS-settings.ini
+
+# local release staging
+/dist/
+/release/
+*.zip
+
+# windows noise
+Thumbs.db
+desktop.ini
+.DS_Store
