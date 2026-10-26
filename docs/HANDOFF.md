@@ -101,11 +101,13 @@ Get-Content "$b\ue4ss\Mods\LN2Coop\LN2Coop.log" -Tail 20
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_bridge.ps1 -Mode auto
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_bridge.ps1 -Mode quick
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_bridge.ps1 -Mode jump
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\test_bridge.ps1 -Mode pad -PadSeconds 15
 ```
 
 - `auto` — ставит `mod\Scripts\main.lua` в `G:\LN2\test-install`, проходит в `PLVL_Wilderness`, гоняет p2 через `bridge_test.txt`: вперёд, назад, вбок, поворот камеры, прыжок; скриншоты и лог в `G:\LN2\local`.
 - `quick` — только вперёд 4 с, быстрый цикл.
+- `jump` — прыжок и повторное нажатие A в воздухе: второй прыжок не должен срабатывать.
 - `pad` — ничего не подставляет, ждёт N секунд: в это время человек двигает **левый стик второго пада**, в логе должны появиться `test=false` и рост скорости/смещение p2.
 - Скрипт **перезаписывает** `ue4ss\Mods\mods.txt` в тестовой копии (оставляет только `LN2Coop : 1`) и чистит лог. В игре пользователя его не запускать.
 

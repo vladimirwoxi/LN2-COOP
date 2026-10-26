@@ -701,20 +701,21 @@ local function bridgeStep()
         if vz < 50.0 and BRIDGE.jumpZBefore < 50.0 then
             local mv = movementComp(pawn)
             local ok = false
-            if mv then
+            -- only from the ground: otherwise pressing A in the air would stack jumps
+            if mv and moveMode(mv) == "1" then
                 pcall(function() mv:SetMovementMode(3, 0) end)
                 ok = pcall(function()
                     mv.Velocity = { X = v.X or 0, Y = v.Y or 0, Z = CONFIG.jumpZ }
                 end)
+                if not ok then
+                    ok = pcall(function()
+                        pawn:LaunchCharacter({ X = 0, Y = 0, Z = CONFIG.jumpZ }, false, true)
+                    end)
+                end
+                log("jump: Character::Jump did not lift the pawn (vz=%.0f) - forced falling+velocity ok=%s", vz, tostring(ok))
+                BRIDGE.jumpProbeAt = now() + 0.15
+                BRIDGE.jumpProbeN = 0
             end
-            if not ok then
-                ok = pcall(function()
-                    pawn:LaunchCharacter({ X = 0, Y = 0, Z = CONFIG.jumpZ }, false, true)
-                end)
-            end
-            log("jump: Character::Jump did not lift the pawn (vz=%.0f) - forced falling+velocity ok=%s", vz, tostring(ok))
-            BRIDGE.jumpProbeAt = now() + 0.15
-            BRIDGE.jumpProbeN = 0
         end
         BRIDGE.jumpRequestedAt = 0
     end

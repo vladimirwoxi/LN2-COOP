@@ -12,7 +12,7 @@
 #            human can move the second gamepad.
 
 param(
-    [ValidateSet("auto", "pad", "quick")][string]$Mode = "auto",
+    [ValidateSet("auto", "pad", "quick", "jump")][string]$Mode = "auto",
     [int]$PadSeconds = 12,
     [string]$Bin = "G:\LN2\test-install\Helios\Binaries\Win64",
     [string]$OutDir = "G:\LN2\local"
@@ -134,6 +134,17 @@ if ($Mode -eq "auto") {
     Set-Test "0,1"
     Start-Sleep -Seconds 4
     Shot "quick"
+} elseif ($Mode -eq "jump") {
+    Say "jump test: jump, then press A again in the air (must not stack)"
+    Set-Test "0,0,0,0,1"
+    Start-Sleep -Milliseconds 250
+    Set-Test "0,0"
+    Start-Sleep -Milliseconds 100
+    Set-Test "0,0,0,0,1"
+    Start-Sleep -Milliseconds 250
+    Set-Test "0,0"
+    Start-Sleep -Seconds 1
+    Shot "jump"
 } else {
     Say ("pad test: move the LEFT stick on gamepad 2 now, " + $PadSeconds + " seconds")
     Start-Sleep -Seconds $PadSeconds
