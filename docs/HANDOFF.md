@@ -109,3 +109,37 @@ Get-Content "$b\ue4ss\Mods\LN2Coop\LN2Coop.log" -Tail 20
 - `G:\LN2\refs\little-nightmares-1-coop\AtlasCoop\Scripts\main.lua` — LN1 split-screen мод (телепорт, парковка, меню, аспект): лучший образец похожего решения.
 - `G:\LN2\refs\RE-UE4SS` — исходники UE4SS (клон), `G:\Little Nightmares 2\ue4ss\Docs\lua-api.md` — API.
 - Документация UE4SS: `fixing-compatibility-problems.md` — ProcessEvent **нельзя** переопределить через AOB, поэтому и понадобился бинарный патч.
+
+## План следующей сессии
+
+Цель: заставить второго Моно двигаться от своего пада.
+
+1. Взять `wip/v0.5-bridge/main.lua` как основу — там уже есть чтение пада 2 (`GetInputAnalogKeyState`/`IsInputKeyDown` дают реальные значения), поворот камеры, прыжок и удержание пешки на земле.
+2. Заменить способ движения: `AddMovementInput` на второй пешке срабатывает непоследовательно, поэтому двигать напрямую —
+   `pawn:K2_SetActorLocation(pos + dir * speed * dt, true, {}, false)` каждый тик (`dt = bridgeInterval/1000`, `speed ≈ MaxWalkSpeed = 210`).
+   Свип `true` не даст проходить сквозь стены.
+3. Проверить в тестовой копии `G:\LN2\test-install` (рецепт ниже), убедиться, что позиция/скорость p2 меняются и что нижняя половина экрана рисуется.
+4. Если поехало — перенести в `mod/Scripts/main.lua` как v0.6, обновить `CHANGELOG.md`/`README.md`, поставить в игру пользователя через `tools/install.ps1 -GameDir "G:\Little Nightmares 2"`.
+5. Дальше: прыжок/взаимодействие для p2 (сейчас в WIP только `Jump`), затем двери/лифты/чекпоинты.
+
+Важно: ставить p2 **точно в точку p1** (offset 0) и только потом сдвигать свипом — иначе точка попадает вне меша пола, Моно падает сквозь мир, и нижняя половина экрана становится чёрной.
+
+## Как гонять тест (рецепт из сессии 5)
+
+```powershell
+$bin = "G:\LN2\test-install\Helios\Binaries\Win64"
+Start-Process "$bin\Little_Nightmares_II_Enhanced-Win64-Shipping.exe" -WorkingDirectory $bin
+# через ~20-30 с игра в меню; ENTER продолжает игру
+powershell -NoProfile -ExecutionPolicy Bypass -File G:\LN2\local\win.ps1 -Action keys -Keys ENTER
+# скриншот (win.ps1 сам поднимает окно на передний план)
+powershell -NoProfile -ExecutionPolicy Bypass -File G:\LN2\local\win.ps1 -Action shot -Out G:\LN2\local\shot.png
+# логи
+Get-Content "$bin\ue4ss\Mods\LN2Coop\LN2Coop.log" -Tail 30
+Get-Content "$bin\ue4ss\Mods\LN2Diag\LN2Diag.log" -Tail 30
+Get-Process -Name "Little_Nightmares_II_Enhanced-Win64-Shipping" | Stop-Process -Force
+```
+
+- Загрузка уровня занимает 20–100 с: ждать появления в логе `placed beside` / `input bridge: resolved`.
+- `LN2Diag` — диагностический мод в тестовой копии (скорости и позиции обеих пешек); включается строкой `LN2Diag : 1` в `Mods\mods.txt`.
+- Игра встаёт на паузу без фокуса; `win.ps1 -Action shot` поднимает окно, но снять паузу надо клавишей (ENTER/Space).
+- Геймпады: два 8BitDo, XInput-слоты 0 и 1 (проверено `XInputGetState`).
