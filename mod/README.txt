@@ -1,5 +1,5 @@
-LN2Coop 0.6 — Little Nightmares II, split-screen co-op on one PC
-==============================================================
+LN2Coop 0.6.1 — Little Nightmares II, split-screen co-op on one PC
+===============================================================
 
 Репозиторий проекта (private): https://github.com/vladimirwoxi/LN2-COOP
 Там же: docs\HANDOFF.md (состояние проекта), docs\TECHNICAL.md (патч UE4SS),
@@ -27,6 +27,7 @@ BP_PlayerPawn (та же модель, те же способности, сво�
 Управление игроком 2
 --------------------
   левый стик  — ходьба,
+  X           — спринт (удерживать),
   правый стик — камера,
   A           — прыжок.
 
@@ -34,8 +35,9 @@ BP_PlayerPawn (та же модель, те же способности, сво�
 точка на полу, иначе пешка оказывается вне уровня и проваливается. Двиньте
 левый стик — и он отделится и пойдёт сам.
 
-Взаимодействия (захват, двери, рычаги) пока не проброшены: игра не выполняет
-свои действия для второго игрока, их нужно подключать отдельно.
+Подбор предметов и взаимодействия (захват, двери, рычаги) пока НЕ работают:
+игра не выполняет свои действия для второго игрока, их нужно подключать
+отдельно.
 
 Выключить кооп (играть одному)
 ------------------------------
@@ -72,11 +74,12 @@ ProcessEvent.
 
 Известные ограничения (проверено на стартовом уровне)
 -----------------------------------------------------
-* Проверены: создание второго Моно, разделение экрана, ходьба/камера/прыжок
-  со второго пада, постановка на пол. Полное прохождение вдвоём ещё не
-  пройдено.
-* Взаимодействия второго игрока (захват, подъём, двери, рычаги) не
-  подключены — игра выполняет свои действия только для первого игрока.
+* Проверены: создание второго Моно, разделение экрана, ходьба/спринт (X)/
+  камера/прыжок (A) со второго пада, постановка на пол. Полное прохождение
+  вдвоём ещё не пройдено.
+* Подбор предметов и взаимодействия второго игрока (захват, подъём, двери,
+  рычаги) НЕ работают — игра выполняет свои действия только для первого
+  игрока.
 * Сюжетные скрипты, двери, лифты и враги рассчитаны на одного игрока.
   Если где-то второй игрок останется за дверью/в лифте — это ограничение
   мода, а не поломка; перезапуск уровня помогает.
@@ -100,8 +103,9 @@ ProcessEvent.
     полу), обнуляет скорость и переводит в режим ходьбы;
   * игра не выполняет свои действия для второго игрока, поэтому мод сам
     читает второй пад и ведёт пешку: пишет CharacterMovement.Velocity для
-    ходьбы, крутит камеру через SetControlRotation, прыгает через
-    MOVE_Falling + вертикальную скорость;
+    ходьбы (210) и спринта (360, кнопка X), переворачивает сырые оси стика
+    (на этой сборке они инвертированы), крутит камеру через SetControlRotation,
+    прыгает через MOVE_Falling + вертикальную скорость (A);
   * на смене уровня всё повторяется; в меню разделение выключается.
 
 Удаление
@@ -113,8 +117,8 @@ UE4SS.dll.orig, если хотите оставить UE4SS без патча).
 
 ------------------------------------------------------------------------------
 
-LN2Coop 0.6 — English
----------------------
+LN2Coop 0.6.1 — English
+----------------------
 Same-PC split-screen co-op for Little Nightmares II (Enhanced Edition).
 Player 2 is a second Mono: the game's own game mode spawns a second
 BP_PlayerPawn with its own controller and camera. Six is never touched and
@@ -123,12 +127,14 @@ stays the game's AI companion.
 Connect both gamepads before launching. Start the game normally, continue,
 and once a level loads the second Mono appears and the screen splits.
 
-Player 2 controls: left stick walks, right stick turns the camera, A jumps.
+Player 2 controls: left stick walks, X sprints, right stick turns the camera, A jumps.
 The game runs none of its own actions for player 2, so the mod reads pad 2
 and drives the pawn itself (CharacterMovement.Velocity, SetControlRotation,
-MOVE_Falling + vertical velocity). Interactions (grab, doors, levers) are not
-wired yet. Player 2 is placed exactly on player 1's known-good floor spot and
-will overlap player 1 until you move the left stick.
+MOVE_Falling + vertical velocity). The raw stick axes are inverted on this
+build, so both movement axes are flipped. Picking up items and other
+interactions (grab, doors, levers) are not wired yet. Player 2 is placed
+exactly on player 1's known-good floor spot and will overlap player 1 until
+you move the left stick.
 
 Set "off" in coop.cfg to disable co-op.
 
@@ -139,7 +145,7 @@ UFunction call silently returns zero on this build. UE4SS.dll.orig is the
 untouched original; patch_ue4ss.ps1 re-applies the patch.
 
 Tested: second Mono creation, split screen, placement, level start, walking
-forward/back/strafe from pad 2, camera yaw, jump, on the user's installed
-game. Full two-player story playthrough is not tested yet; doors, lifts and
-enemies are still single-player logic. The game pauses when its window loses
-focus.
+forward/back/strafe from pad 2, sprint on X, camera yaw, jump on A, on the
+user's installed game. Picking up items and other interactions do not work
+yet; doors, lifts and enemies are still single-player logic. The game pauses
+when its window loses focus.

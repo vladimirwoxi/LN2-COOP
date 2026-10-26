@@ -12,7 +12,7 @@
 #            human can move the second gamepad.
 
 param(
-    [ValidateSet("auto", "pad", "quick", "jump")][string]$Mode = "auto",
+    [ValidateSet("auto", "pad", "quick", "jump", "sprint")][string]$Mode = "auto",
     [int]$PadSeconds = 12,
     [string]$Bin = "G:\LN2\test-install\Helios\Binaries\Win64",
     [string]$OutDir = "G:\LN2\local"
@@ -67,6 +67,7 @@ Copy-Item $src (Join-Path $mod "Scripts\main.lua") -Force
 [System.IO.File]::WriteAllText((Join-Path $mod "coop.cfg"), "on`r`n", (New-Object System.Text.ASCIIEncoding))
 Remove-Item $testFile -ErrorAction SilentlyContinue
 Remove-Item $log -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $mod "api_dump.txt") -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $mod "LN2Coop.log.prev") -ErrorAction SilentlyContinue
 
 # only the co-op mod, no diagnostics
@@ -134,6 +135,11 @@ if ($Mode -eq "auto") {
     Set-Test "0,1"
     Start-Sleep -Seconds 4
     Shot "quick"
+} elseif ($Mode -eq "sprint") {
+    Say "sprint test: forward with X held (test-drive sprint flag)"
+    Set-Test "0,1,0,0,0,1"
+    Start-Sleep -Seconds 4
+    Shot "sprint"
 } elseif ($Mode -eq "jump") {
     Say "jump test: jump, then press A again in the air (must not stack)"
     Set-Test "0,0,0,0,1"

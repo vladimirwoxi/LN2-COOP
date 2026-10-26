@@ -1,4 +1,4 @@
--- LN2Coop v0.6 - same-PC split-screen co-op for Little Nightmares II (Enhanced Edition)
+-- LN2Coop v0.6.1 - same-PC split-screen co-op for Little Nightmares II (Enhanced Edition)
 --
 -- Player 2 is a *second Mono*: the game's own game mode spawns a second BP_PlayerPawn
 -- (same class as player 1) together with its own BP_PlayerPawnController and camera.
@@ -35,6 +35,16 @@ local CONFIG = {
     bridgeInterval = 33,
     -- player 2 walking speed, units/s (the game's own MaxWalkSpeed is 210)
     moveSpeed = 210.0,
+    -- sprint speed while RB is held (the game's own sprint is faster than a walk)
+    sprintSpeed = 360.0,
+    -- the raw Gamepad_Left* values from GetInputAnalogKeyState are opposite to the
+    -- direction the game uses for player 1 on this build: up came out as down and left
+    -- as right. These flip the raw pad values into logical "forward/right is positive".
+    invertMoveX = true,
+    invertMoveY = true,
+    -- right stick, same question; checked separately in game before changing
+    invertLookX = false,
+    invertLookY = false,
     -- camera rotation speed, degrees/s at full stick deflection
     lookSpeed = 150.0,
     -- vertical impulse used if Character::Jump() does not take
@@ -428,8 +438,9 @@ LoopAsync(CONFIG.interval, function()
     end)
 end)
 
-log("v0.6 loaded (player 2 = second Mono, Six stays AI, input bridge), co-op %s, dir %s",
+log("v0.6.1 loaded (player 2 = second Mono, Six stays AI, input bridge), co-op %s, dir %s",
     CONFIG.enabled and "on" or "off", MOD_DIR)
+
 
 
 -- ---------------------------------------------------------------------------
@@ -456,9 +467,57 @@ local BRIDGE = {
     testNextRead = 0,
     lastDiag = 0,
     lastSig = nil,
+    lastButtonSig = nil,
+    lastSprint = false,
 }
 
 local bridgeKeys = nil
+
+-- One-time dump of the game's own gamepad bindings. It shows which button the game calls
+-- "jump" and which scale the movement axes use, so the bridge does not have to guess.
+local function dumpInputMappings(ins)
+    if not isLive(ins) then return end
+    local function keyName(e)
+        local k = nil
+        pcall(function() k = e.Key.KeyName:ToString() end)
+        return k
+    end
+    local am = nil
+    pcall(function() am = ins.ActionMappings end)
+    if isLive(am) then
+        local n = 0
+        pcall(function() n = #am end)
+        for i = 1, math.min(n, 300) do
+            local e = nil
+            pcall(function() e = am[i] end)
+            if e ~= nil then
+                local an, kn = nil, keyName(e)
+                pcall(function() an = e.ActionName:ToString() end)
+                if kn and kn:find("Gamepad_", 1, true) then
+                    log("action map: %s = %s", tostring(an), kn)
+                end
+            end
+        end
+    end
+    local ax = nil
+    pcall(function() ax = ins.AxisMappings end)
+    if isLive(ax) then
+        local n = 0
+        pcall(function() n = #ax end)
+        for i = 1, math.min(n, 300) do
+            local e = nil
+            pcall(function() e = ax[i] end)
+            if e ~= nil then
+                local an, kn, scale = nil, keyName(e), nil
+                pcall(function() an = e.AxisName:ToString() end)
+                pcall(function() scale = e.Scale end)
+                if kn and kn:find("Gamepad_", 1, true) then
+                    log("axis map: %s = %s scale=%s", tostring(an), kn, tostring(scale))
+                end
+            end
+        end
+    end
+end
 
 local function resolveBridgeKeys()
     if bridgeKeys then return bridgeKeys end
@@ -467,7 +526,9 @@ local function resolveBridgeKeys()
     if not isLive(ins) then return nil end
     local wanted = {
         "Gamepad_LeftX", "Gamepad_LeftY", "Gamepad_RightX", "Gamepad_RightY",
-        "Gamepad_FaceButton_Bottom", "Gamepad_FaceButton_Left",
+        "Gamepad_FaceButton_Bottom", "Gamepad_FaceButton_Right",
+        "Gamepad_FaceButton_Left", "Gamepad_FaceButton_Top",
+        "Gamepad_RightShoulder", "Gamepad_LeftShoulder",
     }
     local out, left = {}, #wanted
     local function scan(arr)
@@ -498,6 +559,7 @@ local function resolveBridgeKeys()
     if left > 0 then return nil end
     bridgeKeys = out
     log("input bridge: resolved %d gamepad keys", #wanted)
+    dumpInputMappings(ins)
     return bridgeKeys
 end
 
@@ -516,13 +578,16 @@ local function keyDown(pc, name)
     local keys = resolveBridgeKeys()
     if not keys or not keys[name] then return false end
     local ok, down = pcall(function() pc:IsInputKeyDown(keys[name]) end)
-    return ok and down == true
+    if ok and down == true then return true end
+    -- some buttons do not show up in IsInputKeyDown for player 2, but their analog
+    -- state is updated; treat a pressed button as a 1.0 axis
+    local ok2, v = pcall(function() return pc:GetInputAnalogKeyState(keys[name]) end)
+    return ok2 and type(v) == "number" and v > 0.5
 end
 
 -- Optional test drive: a small file in the mod folder replaces pad 2 with fixed values,
 -- so the movement path can be checked without hands on the second gamepad.
-local function readTestDrive()
-    local t = now()
+local function readTestDrive()    local t = now()
     if t < BRIDGE.testNextRead then return BRIDGE.testValues end
     BRIDGE.testNextRead = t + 0.2
     local path = MOD_DIR .. "/" .. CONFIG.testDriveFile
@@ -549,10 +614,12 @@ local function readTestDrive()
         rx = math.max(-1, math.min(1, nums[3] or 0)),
         ry = math.max(-1, math.min(1, nums[4] or 0)),
         jump = (nums[5] or 0) ~= 0,
+        sprint = (nums[6] or 0) ~= 0,
     }
     if not BRIDGE.testActive then
         BRIDGE.testActive = true
-        log("test drive: on L=(%.2f,%.2f) R=(%.2f,%.2f) jump=%s", v.mx, v.my, v.rx, v.ry, tostring(v.jump))
+        log("test drive: on L=(%.2f,%.2f) R=(%.2f,%.2f) jump=%s sprint=%s",
+            v.mx, v.my, v.rx, v.ry, tostring(v.jump), tostring(v.sprint))
     end
     BRIDGE.testValues = v
     return v
@@ -560,16 +627,22 @@ end
 
 local function readSticks(pc)
     local t = readTestDrive()
-    if t then return t.mx, t.my, t.rx, t.ry, t.jump, true end
+    if t then return t.mx, t.my, t.rx, t.ry, t.jump, t.sprint, true end
     local mx = keyValue(pc, "Gamepad_LeftX")
     local my = keyValue(pc, "Gamepad_LeftY")
     local rx = keyValue(pc, "Gamepad_RightX")
     local ry = keyValue(pc, "Gamepad_RightY")
+    if CONFIG.invertMoveX then mx = -mx end
+    if CONFIG.invertMoveY then my = -my end
+    if CONFIG.invertLookX then rx = -rx end
+    if CONFIG.invertLookY then ry = -ry end
     if math.abs(mx) < BRIDGE.deadzone then mx = 0.0 end
     if math.abs(my) < BRIDGE.deadzone then my = 0.0 end
     if math.abs(rx) < BRIDGE.lookDeadzone then rx = 0.0 end
     if math.abs(ry) < BRIDGE.lookDeadzone then ry = 0.0 end
-    return mx, my, rx, ry, keyDown(pc, "Gamepad_FaceButton_Bottom"), false
+    -- the game maps ActionSprint to Gamepad_FaceButton_Left (X on an Xbox pad)
+    return mx, my, rx, ry, keyDown(pc, "Gamepad_FaceButton_Bottom"),
+        keyDown(pc, "Gamepad_FaceButton_Left"), false
 end
 
 local function moveDirection(pc, mx, my)
@@ -591,14 +664,15 @@ end
 -- but the game's input path still swallows it), so the horizontal velocity is written
 -- directly. The movement component then does the usual thing: collision, slopes, gravity
 -- and the walking animation all keep working.
-local function drivePawn(pawn, dx, dy, dt)
+local function drivePawn(pawn, dx, dy, dt, sprint)
+    local target = sprint and CONFIG.sprintSpeed or CONFIG.moveSpeed
     local mv = movementComp(pawn)
     if mv then
         local v = velocityOf(pawn)
         -- The movement component brakes between bridge ticks (it sees no input), so the
         -- measured speed is lower than the value written here. Compensate for that.
         local along = (v.X or 0) * dx + (v.Y or 0) * dy
-        local speed = CONFIG.moveSpeed
+        local speed = target
         if along > 0 and along < speed then
             speed = math.min(speed * 1.5, speed + (speed - along))
         end
@@ -608,7 +682,7 @@ local function drivePawn(pawn, dx, dy, dt)
         if ok then return true end
     end
     -- no movement component (should not happen for a Mono): move the actor, swept
-    local step = CONFIG.moveSpeed * dt
+    local step = target * dt
     local sx, sy = dx * step, dy * step
     local ok, moved = pcall(function()
         return pawn:AddActorWorldOffset({ X = sx, Y = sy, Z = 0 }, true, {}, false)
@@ -651,7 +725,8 @@ local function requestJump(pawn)
     BRIDGE.jumpZBefore = z
     BRIDGE.jumpRequestedAt = t
     local ok, err = pcall(function() pawn:Jump() end)
-    log("jump requested: ok=%s z=%.0f %s", tostring(ok), z, ok and "" or tostring(err))
+    log("jump requested: ok=%s z=%.0f mode=%s %s", tostring(ok), z,
+        moveMode(movementComp(pawn)), ok and "" or tostring(err))
 end
 
 local function bridgeDiag(pc, pawn, mx, my, rx, ry, isTest)
@@ -681,13 +756,33 @@ local function bridgeStep()
     local pc, pawn = P2.pc, P2.pawn
     local dt = CONFIG.bridgeInterval / 1000.0
 
-    local mx, my, rx, ry, jump, isTest = readSticks(pc)
+    local mx, my, rx, ry, jump, sprint, isTest = readSticks(pc)
+    -- sprint comes from readSticks: X button on the pad, or the test-drive file
+    if sprint ~= BRIDGE.lastSprint then
+        BRIDGE.lastSprint = sprint
+        log("sprint: %s", tostring(sprint))
+    end
+    local bB = keyDown(pc, "Gamepad_FaceButton_Right")
+    local bX = keyDown(pc, "Gamepad_FaceButton_Left")
+    local bY = keyDown(pc, "Gamepad_FaceButton_Top")
+    local aAnalog = 0
+    local keys = resolveBridgeKeys()
+    if keys and keys["Gamepad_FaceButton_Bottom"] then
+        pcall(function() aAnalog = pc:GetInputAnalogKeyState(keys["Gamepad_FaceButton_Bottom"]) end)
+    end
+    local bsig = string.format("%s%s%s%s%.2f", jump and "1" or "0", bB and "1" or "0",
+        bX and "1" or "0", bY and "1" or "0", aAnalog or 0)
+    if bsig ~= BRIDGE.lastButtonSig then
+        BRIDGE.lastButtonSig = bsig
+        log("buttons: A=%s Aanalog=%.2f B=%s X=%s Y=%s (test=%s)",
+            tostring(jump), aAnalog or 0, tostring(bB), tostring(bX), tostring(bY), tostring(isTest))
+    end
     applyCamera(pc, rx, ry, dt)
 
     local moving = (mx ~= 0.0 or my ~= 0.0)
     if moving then
         local dx, dy = moveDirection(pc, mx, my)
-        drivePawn(pawn, dx, dy, dt)
+        drivePawn(pawn, dx, dy, dt, sprint)
     end
 
     if jump and not BRIDGE.jumpPrev then requestJump(pawn) end

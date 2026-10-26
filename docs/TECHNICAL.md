@@ -91,7 +91,7 @@ CreatePlayer(pc, 1, true) -> второй ULocalPlayer, дальше игра с
 
 `UObject::ProcessEvent` (exe RVA `0x2875080`): `if (FunctionFlags & FUNC_Native) { ((NativeFunc)Func)(this, parms, retval); return; }` иначе — выполнение байткода.
 
-## Мод v0.6: создание и ведение второго игрока
+## Мод v0.6.1: создание и ведение второго игрока
 
 ### Создание
 
@@ -129,10 +129,11 @@ upkeep() каждые 1 с (ExecuteInGameThread)
 
 ```
 readSticks(pc2)  -- GetInputAnalogKeyState(Gamepad_*) или bridge_test.txt
-  ├─ левый стик → dir относительно pc2:GetControlRotation()
-  │    └─ mv.Velocity = dir * 210 (с компенсацией торможения)
+  ├─ левый стик → инверсия X/Y → dir относительно pc2:GetControlRotation()
+  │    └─ mv.Velocity = dir * (sprint ? 360 : 210) (с компенсацией торможения)
+  ├─ X (Gamepad_FaceButton_Left) → sprint
   ├─ правый стик → pc2:SetControlRotation(Pitch, Yaw + rx*150*dt)
-  ├─ A (edge) → pawn:Jump(); если через 0.12 с Z-скорость < 50:
+  ├─ A (edge, аналоговое состояние) → pawn:Jump(); если через 0.12 с Z < 50:
   │                SetMovementMode(MOVE_Falling); Velocity.Z = 420
   └─ раз в 1 с → строка "p2 state: ..." в лог
 ```
@@ -148,8 +149,23 @@ readSticks(pc2)  -- GetInputAnalogKeyState(Gamepad_*) или bridge_test.txt
 
 Скорость: между тиками моста компонент тормозит (входного вектора нет), поэтому фактическая
 скорость ниже записанной. Мост оценивает проекцию текущей скорости на желаемое направление
-и пишет `speed + (speed - along)` (не больше 1.5×). В логе на склоне 130–176 ед/с, на ровном
-ближе к 210.
+и пишет `speed + (speed - along)` (не больше 1.5×). Ходьба: 130–176 ед/с на склоне,
+210 на ровном; спринт: 284–331 в логе (цель 360).
+
+Карта действий игры (из `InputSettings.ActionMappings`, пишется в `LN2Coop.log` при старте):
+
+| Действие | Кнопка |
+|---|---|
+| `ActionJump` / `ActionThrow` | A (`Gamepad_FaceButton_Bottom`) |
+| `ActionSprint` | X (`Gamepad_FaceButton_Left`) |
+| `ActionCall` | Y (`Gamepad_FaceButton_Top`) |
+| `EquipItem1-4` | B (`Gamepad_FaceButton_Right`) |
+| `ActionCancelGrab` | RT (`Gamepad_RightTriggerAxis`) |
+| `ExitMenu` | B |
+| `RequestPause` | Menu |
+
+`ActionCall` (Y) — parameterless `Helios.ControlledPawn:OnActionCall`; вызов на p2 проходит
+без ошибки, но подбор предмета им не подтверждён. Подбор пока не работает.
 
 ### Камера
 
@@ -161,7 +177,9 @@ readSticks(pc2)  -- GetInputAnalogKeyState(Gamepad_*) или bridge_test.txt
 ### Прыжок
 
 `Character::Jump()` возвращает `ok`, но не поднимает пешку (`vz` остаётся 0): игра, видимо,
-игнорирует jump-ввод p2. Работает принудительный путь:
+игнорирует jump-ввод p2. Кроме того, `IsInputKeyDown(Gamepad_FaceButton_Bottom)` для p2
+возвращает `false`, хотя `GetInputAnalogKeyState` даёт `1.00`; поэтому `keyDown` сначала
+проверяет `IsInputKeyDown`, затем аналоговое значение > 0.5. Работает принудительный путь:
 
 ```lua
 mv:SetMovementMode(3 /*MOVE_Falling*/, 0)
@@ -175,10 +193,10 @@ mv.Velocity = { X = v.X, Y = v.Y, Z = 420 }
 
 ### Тестовый режим
 
-`bridge_test.txt` в папке мода: `x,y` или `x,y,rx,ry,jump` (значения −1…1). Пока файл есть,
+`bridge_test.txt` в папке мода: `x,y` или `x,y,rx,ry,jump,sprint` (значения −1…1). Пока файл есть,
 мост берёт стики оттуда (`test=true` в логе); удалить файл — снова реальный пад.
 `tools/test_bridge.ps1` раскладывает мод в `G:\LN2\test-install`, проходит в
-`PLVL_Wilderness` и гоняет сценарий (auto/quick/pad).
+`PLVL_Wilderness` и гоняет сценарий (auto/quick/sprint/jump/pad).
 
 ## Ввод второго игрока: почему штатный путь не работает
 
@@ -196,13 +214,18 @@ mv.Velocity = { X = v.X, Y = v.Y, Z = 420 }
 | Второй pawn спавнится вне уровня | Z до −3400, падение |
 | Постановка точно в p1 приземляет p2 | Z 596, скорость 0, нижняя половина рисуется |
 | `mv.Velocity` двигает p2 | скорость 130–176, позиция меняется на сотни единиц |
+| Сырые оси левого стика инвертированы | пользователь: «вверх — низ, лево — право»; после `invertMoveX/Y` движение корректно |
+| Спринт — X | `ActionSprint = Gamepad_FaceButton_Left`; с X скорость 284–331, без X 130–176 |
+| Кнопка A не видна через `IsInputKeyDown` | `IsInputKeyDown` = false, `GetInputAnalogKeyState` = 1.00; аналоговый fallback в `keyDown` |
 | `SetControlRotation` крутит камеру p2 | yaw 160 → 303 |
 | `SetMovementMode(MOVE_Falling)+Velocity.Z` прыгает | z 634 → 679 → 634 |
+| `ActionCall` (Y) = `OnActionCall()` без параметров | UFunction `NumParms=0`; вызов на p2 проходит, подбор предмета не подтверждён |
 
 Вывод: штатного пути «отдать второй пад второму локальному игроку» в этой игре нет — ввод
 однопользовательский. Единственный рабочий путь — собственный мост: читать пад 2 и вести
-пешку через `CharacterMovement`. Для действий кроме ходьбы/камеры/прыжка нужно отдельно
-находить и вызывать игровые функции p1 (следующая задача).
+пешку через `CharacterMovement`. Ходьба, спринт, камера и прыжок сделаны; подбор предметов
+и остальные интеракции ещё нужно находить (вероятно, `PlayerPickupInterface` и pickup-актёры
+или автоматический подбор).
 
 ## Важные классы и миры
 
