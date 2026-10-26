@@ -91,26 +91,116 @@ CreatePlayer(pc, 1, true) -> второй ULocalPlayer, дальше игра с
 
 `UObject::ProcessEvent` (exe RVA `0x2875080`): `if (FunctionFlags & FUNC_Native) { ((NativeFunc)Func)(this, parms, retval); return; }` иначе — выполнение байткода.
 
-## Мод: как создаётся второй игрок
+## Мод v0.6: создание и ведение второго игрока
+
+### Создание
 
 ```
-upkeep() каждые 2 с (ExecuteInGameThread)
-  └─ world name содержит "PLVL_" (игровой уровень)?
-       ├─ нет  → bUseSplitscreen = false (меню не делим), выход
+upkeep() каждые 1 с (ExecuteInGameThread)
+  └─ world name содержит "PLVL_"?
+       ├─ нет  → bUseSplitscreen = false (меню не делим), P2 = nil, выход
        └─ да   → bUseSplitscreen = true
                  localPlayerCount < 2 ?
-                   └─ GameplayStatics:CreatePlayer(pc1, ControllerId=1, bSpawnPlayerController=true)
-                        └─ UGameInstance::CreateLocalPlayer → второй ULocalPlayer
-                             └─ игра сама: BP_PlayerPawnController_C + BP_PlayerPawn_C + камера
+                   └─ GameplayStatics:CreatePlayer(pc1, ControllerId=1, spawn=true)
+                        └─ игра сама: BP_PlayerPawnController_C + BP_PlayerPawn_C + камера
                  P2 pawn = BP_PlayerPawn_C ?
-                   ├─ ещё нет → вернуться на следующем тике (респавн на чекпоинте)
-                   └─ да → log input/controller; один раз на мир:
-                           K2_SetActorLocationAndRotation(позиция P1 + right*130, rot P1, false, {}, true)
+                   ├─ новый pawn → placePlayer2()
+                   └─ уже стоит  → keepPlayer2Near()
 ```
 
-Почему `bUseSplitscreen`: без него движок оставляет обоим игрокам один вьюпорт (второй игрок «невидим»). Почему не трогаем Шестую: она живёт в `BP_SixPawn_C` под `BP_PlaypalAIController_C`, и её поведение привязано к сюжету; второй игрок должен быть полным Моно.
+`placePlayer2`:
 
-Конфиг мода: `pad2 = 1`, `spawnSideOffset = 130.0`, `interval = 2000` мс (см. `mod/Scripts/main.lua`).
+1. `K2_SetActorLocationAndRotation(p1.location, p1.rotation, bSweep=false, ..., bTeleport=true)` —
+   ровно в точку p1.
+2. `mv:StopMovementImmediately()` — телепорт сохраняет старую скорость (иначе падение
+   продолжается с новой точки).
+3. `mv:SetMovementMode(MOVE_Walking, 0)` — выйти из `MOVE_Falling`.
+4. `SetCollisionResponseToChannel(ECC_Pawn=2, ECR_Ignore=0)` на капсуле p2 — иначе два
+   Моно блокируют друг друга в одной точке.
+
+Почему ровно в p1: у уровня нет PlayerStart для второго игрока, спавн оказывается вне
+меша пола (Z до −3400), пешка падает, камера уходит под карту → нижняя половина чёрная.
+Точка p1 гарантированно на полу. Смещение в сторону (45–80 см) небезопасно: свип упирается
+в камень, пешка зажимается, и дальше не идёт ни в одну сторону.
+
+### Мост ввода
+
+`LoopAsync(33ms)` → `ExecuteInGameThread`:
+
+```
+readSticks(pc2)  -- GetInputAnalogKeyState(Gamepad_*) или bridge_test.txt
+  ├─ левый стик → dir относительно pc2:GetControlRotation()
+  │    └─ mv.Velocity = dir * 210 (с компенсацией торможения)
+  ├─ правый стик → pc2:SetControlRotation(Pitch, Yaw + rx*150*dt)
+  ├─ A (edge) → pawn:Jump(); если через 0.12 с Z-скорость < 50:
+  │                SetMovementMode(MOVE_Falling); Velocity.Z = 420
+  └─ раз в 1 с → строка "p2 state: ..." в лог
+```
+
+Почему `mv.Velocity`, а не `AddMovementInput`:
+
+- `pc2:IsMoveInputIgnored()` = `false`, `pawn:IsMoveInputIgnored()` = `false`.
+- `pawn:AddMovementInput(dir, 1, true)` не даёт смещения (0 единиц за 0.5 с).
+- `AddActorWorldOffset` со свипом тоже не двигает, когда пешка стоит в точке p1
+  (перекрытие/геометрия).
+- Прямая запись `mv.Velocity` двигает: коллизии, склоны, гравитация и анимация работают,
+  потому что движение выполняет сам `CharacterMovementComponent`.
+
+Скорость: между тиками моста компонент тормозит (входного вектора нет), поэтому фактическая
+скорость ниже записанной. Мост оценивает проекцию текущей скорости на желаемое направление
+и пишет `speed + (speed - along)` (не больше 1.5×). В логе на склоне 130–176 ед/с, на ровном
+ближе к 210.
+
+### Камера
+
+`SetControlRotation` (не `AddControllerYawInput`): `GetControlRotation()` → добавить
+`rx * 150°/s * dt`, pitch `ry * 150°/s * dt * 0.7`, кламп ±80°. Проверено: yaw 160° → 303°
+за ~2.4 с, вид нижней половины меняется. Камера p2 следует за своей пешкой (`ClientRestart`
+обновляет view target).
+
+### Прыжок
+
+`Character::Jump()` возвращает `ok`, но не поднимает пешку (`vz` остаётся 0): игра, видимо,
+игнорирует jump-ввод p2. Работает принудительный путь:
+
+```lua
+mv:SetMovementMode(3 /*MOVE_Falling*/, 0)
+mv.Velocity = { X = v.X, Y = v.Y, Z = 420 }
+```
+
+Проверено: z 634 → 679 → 634, `mode=3` в полёте. Высота ~45 см соответствует
+`GravityScale` игры.
+
+### Тестовый режим
+
+`bridge_test.txt` в папке мода: `x,y` или `x,y,rx,ry,jump` (значения −1…1). Пока файл есть,
+мост берёт стики оттуда (`test=true` в логе); удалить файл — снова реальный пад.
+`tools/test_bridge.ps1` раскладывает мод в `G:\LN2\test-install`, проходит в
+`PLVL_Wilderness` и гоняет сценарий (auto/quick/pad).
+
+## Ввод второго игрока: почему штатный путь не работает
+
+Проверено на тестовой копии (сессии 5–6):
+
+| Факт | Как проверено |
+|---|---|
+| Пад 2 доходит до PlayerInput контроллера p2 | `pc2:IsInputKeyDown` → true; `pc2:GetInputAnalogKeyState` → −1.00…1.00 именно от второго пада |
+| Игра не выполняет действия для p2 | при нажатиях на паде 2 пешка p1 идёт (210), пешка p2 стоит |
+| `AddMovementInput` не даёт ускорения | `IsMoveInputIgnored()=false`, `pawn:IsMoveInputIgnored()=false`, но 0 единиц за 0.5 с; с `bForce=true` то же |
+| `ClientRestart`/`Possess` не помогают | вызовы проходят без ошибок, ввода не возвращают |
+| `PushInputComponent` из Lua недоступен | TrivialObject |
+| `bOffsetPlayerGamepadIds = true` ломает p1 | проверено в игре, откатили на false |
+| `MoveIgnoreActorAdd` не вызывается | TrivialObject/без эффекта; работает `SetCollisionResponseToChannel` |
+| Второй pawn спавнится вне уровня | Z до −3400, падение |
+| Постановка точно в p1 приземляет p2 | Z 596, скорость 0, нижняя половина рисуется |
+| `mv.Velocity` двигает p2 | скорость 130–176, позиция меняется на сотни единиц |
+| `SetControlRotation` крутит камеру p2 | yaw 160 → 303 |
+| `SetMovementMode(MOVE_Falling)+Velocity.Z` прыгает | z 634 → 679 → 634 |
+
+Вывод: штатного пути «отдать второй пад второму локальному игроку» в этой игре нет — ввод
+однопользовательский. Единственный рабочий путь — собственный мост: читать пад 2 и вести
+пешку через `CharacterMovement`. Для действий кроме ходьбы/камеры/прыжка нужно отдельно
+находить и вызывать игровые функции p1 (следующая задача).
 
 ## Важные классы и миры
 
@@ -149,22 +239,6 @@ MaxMemoryUsageDuringAssetLoading = 80
 - `Add-Type` + `ReadProcessMemory`/`WriteProcessMemory` из PowerShell — чтение памяти живой игры, патчинг на лету.
 - DbgHelp через P/Invoke из PowerShell — чтение `UE4SS.pdb` (так найден RVA `0x3ECCC0` для `RC::Unreal::UObject::ProcessEvent`).
 - `G:\LN2\local\win.ps1` — фокус окна, нажатия клавиш, скриншоты (игра на паузе без фокуса).
+- `tools/test_bridge.ps1` — автоматический прогон моста в `G:\LN2\test-install` (auto/quick/pad).
+- `XInputGetState` через P/Invoke — проверка, что физические пады сидят в слотах 0 и 1.
 - Компилятора нет (MSVC без заголовков/импорт-библиотек, MinGW не ставился) — поэтому всё на Lua + PowerShell + бинарный патч.
-
-## Ввод второго игрока (открытый вопрос, сессия 5)
-
-Проверено на тестовой копии диагностическими модами:
-
-| Факт | Как проверено |
-|---|---|
-| Пад 2 доходит до PlayerInput контроллера p2 | pc2:IsInputKeyDown → true в момент нажатий; pc2:GetInputAnalogKeyState → −1.00…1.00 при движении стика (−0.66,0.74 → −1.00,0.00 → 0.32,−1.00) |
-| Игра не выполняет действия для p2 | при нажатиях на паде 2 пешка p1 идёт (скорость 210), пешка p2 — 0 |
-| ClientRestart/Possess для p2 не помогают | вызовы проходят без ошибок, ввода не возвращают; PushInputComponent из Lua недоступен (TrivialObject) |
-| OffsetPlayerGamepadIds = true ломает игрока 1 | проверено в игре, откатили на false |
-| Второй pawn спавнится вне уровня и падает сквозь мир | Z до −3400, скорость растёт как при свободном падении; камера уходит под карту → чёрная половина экрана |
-| Постановка точно в точку p1 приземляет p2 | Z 596, скорость 0, нижняя половина экрана рисуется |
-| AddMovementInput для p2 срабатывает непоследовательно | +Y сдвинул ~60 единиц, +X — нет (влияет геометрия/перекрытие) |
-
-Вывод: штатного пути «отдать второй пад второму локальному игроку» в этой игре, похоже, нет — ввод
-однопользовательский. Практичный путь — собственный мост (читать состояние пада 2 через
-GetInputAnalogKeyState/IsInputKeyDown и двигать пешку), см. `wip/v0.5-bridge/`.

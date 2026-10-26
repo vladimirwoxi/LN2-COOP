@@ -1,4 +1,4 @@
-LN2Coop 0.3 — Little Nightmares II, split-screen co-op on one PC
+LN2Coop 0.6 — Little Nightmares II, split-screen co-op on one PC
 ==============================================================
 
 Репозиторий проекта (private): https://github.com/vladimirwoxi/LN2-COOP
@@ -22,8 +22,20 @@ BP_PlayerPawn (та же модель, те же способности, сво�
 1. Подключите ОБА геймпада до запуска игры.
 2. Запустите игру как обычно (GOG/ярлык). Мод включается сам.
 3. Продолжите игру. Когда загрузится уровень, появится второй Моно и
-   экран разделится. Второй игрок ставится рядом с первым, чтобы они не
-   стояли друг в друге.
+   экран разделится.
+
+Управление игроком 2
+--------------------
+  левый стик  — ходьба,
+  правый стик — камера,
+  A           — прыжок.
+
+В момент появления второй Моно стоит точно в точке первого: это проверенная
+точка на полу, иначе пешка оказывается вне уровня и проваливается. Двиньте
+левый стик — и он отделится и пойдёт сам.
+
+Взаимодействия (захват, двери, рычаги) пока не проброшены: игра не выполняет
+свои действия для второго игрока, их нужно подключать отдельно.
 
 Выключить кооп (играть одному)
 ------------------------------
@@ -60,16 +72,22 @@ ProcessEvent.
 
 Известные ограничения (проверено на стартовом уровне)
 -----------------------------------------------------
-* Проверены: создание второго Моно, разделение экрана, расстановка,
-  загрузка уровня. Полное прохождение с двумя игроками ещё не пройдено.
+* Проверены: создание второго Моно, разделение экрана, ходьба/камера/прыжок
+  со второго пада, постановка на пол. Полное прохождение вдвоём ещё не
+  пройдено.
+* Взаимодействия второго игрока (захват, подъём, двери, рычаги) не
+  подключены — игра выполняет свои действия только для первого игрока.
 * Сюжетные скрипты, двери, лифты и враги рассчитаны на одного игрока.
   Если где-то второй игрок останется за дверью/в лифте — это ограничение
   мода, а не поломка; перезапуск уровня помогает.
+* Капсула второго Моно игнорирует столкновения с другими персонажами,
+  чтобы два Моно не блокировали друг друга в точке спавна. Побочный эффект:
+  p2 проходит сквозь Шестую и врагов.
 * Игра ставится на паузу, когда окно теряет фокус (это поведение самой
   игры). Нажмите «Продолжить» (или Enter), когда вернётесь в окно.
 * Если геймпады переподключить в другом порядке, игроки могут поменяться
   местами — перезапустите игру.
-* Мод не работает без патча UE4SS.dll (см. выше).
+* Мод не работает без патча UE4SS.dll (см. ниже).
 
 Как это работает (коротко)
 --------------------------
@@ -78,8 +96,12 @@ ProcessEvent.
     вызывает UGameplayStatics::CreatePlayer для ControllerId 1;
   * игра сама спавнит второму игроку BP_PlayerPawnController + BP_PlayerPawn
     (Моно) и его камеру;
-  * мод ставит второго Моно рядом с первым (сдвиг вправо), чтобы не
-    спавнить их друг в друге;
+  * мод ставит второго Моно точно в точку первого (проверенная точка на
+    полу), обнуляет скорость и переводит в режим ходьбы;
+  * игра не выполняет свои действия для второго игрока, поэтому мод сам
+    читает второй пад и ведёт пешку: пишет CharacterMovement.Velocity для
+    ходьбы, крутит камеру через SetControlRotation, прыгает через
+    MOVE_Falling + вертикальную скорость;
   * на смене уровня всё повторяется; в меню разделение выключается.
 
 Удаление
@@ -91,7 +113,7 @@ UE4SS.dll.orig, если хотите оставить UE4SS без патча).
 
 ------------------------------------------------------------------------------
 
-LN2Coop 0.3 — English
+LN2Coop 0.6 — English
 ---------------------
 Same-PC split-screen co-op for Little Nightmares II (Enhanced Edition).
 Player 2 is a second Mono: the game's own game mode spawns a second
@@ -101,6 +123,13 @@ stays the game's AI companion.
 Connect both gamepads before launching. Start the game normally, continue,
 and once a level loads the second Mono appears and the screen splits.
 
+Player 2 controls: left stick walks, right stick turns the camera, A jumps.
+The game runs none of its own actions for player 2, so the mod reads pad 2
+and drives the pawn itself (CharacterMovement.Velocity, SetControlRotation,
+MOVE_Falling + vertical velocity). Interactions (grab, doors, levers) are not
+wired yet. Player 2 is placed exactly on player 1's known-good floor spot and
+will overlap player 1 until you move the left stick.
+
 Set "off" in coop.cfg to disable co-op.
 
 UE4SS.dll in this folder is patched: its RC::Unreal::UObject::ProcessEvent
@@ -109,6 +138,8 @@ resolved through the main module base). Without that patch every Lua
 UFunction call silently returns zero on this build. UE4SS.dll.orig is the
 untouched original; patch_ue4ss.ps1 re-applies the patch.
 
-Tested: second Mono creation, split screen, placement, level start. Full
-two-player story playthrough is not tested yet; doors, lifts and enemies are
-still single-player logic. The game pauses when its window loses focus.
+Tested: second Mono creation, split screen, placement, level start, walking
+forward/back/strafe from pad 2, camera yaw, jump, on the user's installed
+game. Full two-player story playthrough is not tested yet; doors, lifts and
+enemies are still single-player logic. The game pauses when its window loses
+focus.
