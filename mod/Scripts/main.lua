@@ -329,6 +329,11 @@ local function inspectPawn(pawn, label)
         adiag("  GetBoneMatrix(4) ok=%s type=%s val=%s", tostring(ok3), type(r3), tostring(r3))
         -- GetSocketTransform / GetLocalBounds / GetComponentSpaceTransforms crashed the
         -- game on this build: do not call them again.
+        adiag("  bRenderStatic=%s bUseAttachedParent=%s lod=%s skelMesh=%s",
+            tostring(objProp(mesh, "bRenderStatic")),
+            tostring(objProp(mesh, "bUseAttachedParent")),
+            tostring(objProp(mesh, "PredictedLODLevel")),
+            tostring(objProp(mesh, "SkeletalMesh")))
         adiag("  animMode=%s bPauseAnims=%s bNoSkelUpdate=%s vbao=%s",
             tostring(objProp(mesh, "AnimationMode")), tostring(objProp(mesh, "bPauseAnims")),
             tostring(objProp(mesh, "bNoSkeletonUpdate")),
