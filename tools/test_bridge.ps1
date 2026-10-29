@@ -12,10 +12,13 @@
 #            human can move the second gamepad.
 
 param(
-    [ValidateSet("auto", "pad", "quick", "jump", "sprint")][string]$Mode = "auto",
+    [ValidateSet("auto", "pad", "quick", "jump", "sprint", "anim", "pose")][string]$Mode = "auto",
     [int]$PadSeconds = 12,
     [string]$Bin = "G:\LN2\test-install\Helios\Binaries\Win64",
-    [string]$OutDir = "G:\LN2\local"
+    [string]$OutDir = "G:\LN2\local",
+    [string]$SaveRoot = "G:\LN2\save-test",
+    # screenshots make the game lose focus (and pause), so log-only runs skip them
+    [switch]$NoShots
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +33,18 @@ $src = Join-Path $PSScriptRoot "..\mod\Scripts\main.lua"
 
 function Say($msg) { Write-Host ("[bridge-test] " + $msg) }
 
+function Set-IniValue([string]$path, [string]$key, [string]$value) {
+    if (-not (Test-Path $path)) { return }
+    $text = [System.IO.File]::ReadAllText($path)
+    $rx = "(?m)^\s*" + [regex]::Escape($key) + "\s*=.*$"
+    if ($text -match $rx) {
+        $text = [regex]::Replace($text, $rx, "$key=$value")
+    } else {
+        $text = $text.TrimEnd() + "`r`n$key=$value`r`n"
+    }
+    [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Wait-Log([string]$pattern, [int]$timeoutSec) {
     $deadline = (Get-Date).AddSeconds($timeoutSec)
     while ((Get-Date) -lt $deadline) {
@@ -43,8 +58,9 @@ function Wait-Log([string]$pattern, [int]$timeoutSec) {
 }
 
 function Shot([string]$name) {
+    if ($NoShots) { return }
     $out = Join-Path $OutDir ("bridge-" + $name + ".png")
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action shot -Out $out | Out-Null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action shot -Out $out -MinConsole | Out-Null
     Say ("screenshot " + $out)
 }
 
@@ -57,6 +73,35 @@ if (-not (Test-Path $exe)) { throw "game exe not found: $exe" }
 if (-not (Test-Path $src)) { throw "mod source not found: $src (run from wip\v0.6-bridge)" }
 if (-not (Test-Path $winPs1)) { throw "win.ps1 not found: $winPs1" }
 
+# The game resolves its save folder through the shell API, not %LOCALAPPDATA%, so the only
+# reliable way to keep the user's progress out of a test is to swap the folder itself:
+# back the real one up, seed it with the test checkpoint, and put the backup back afterwards.
+$realUserSaved = Join-Path $env:USERPROFILE "AppData\Local\Helios\Saved"
+$userSaveGames = Join-Path $realUserSaved "SaveGames"
+$saveBackup = "G:\LN2\save-user-backup"
+$testSaved = Join-Path $SaveRoot "Helios\Saved"
+$saveRestored = $false
+
+function Restore-UserSave {
+    if ($script:saveRestored) { return }
+    if (-not $SaveRoot) { return }
+    if (-not (Test-Path $saveBackup)) { return }
+    Get-Process -Name $exeName -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 3
+    Remove-Item $realUserSaved -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item $saveBackup $realUserSaved -Recurse -Force
+    $script:saveRestored = $true
+    Say "user save/config restored from $saveBackup"
+}
+
+# a terminating error must still put the user's save back
+trap {
+    Say ("ERROR: " + $_)
+    Restore-UserSave
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action restore | Out-Null
+    exit 1
+}
+
 Say "stopping any running game"
 Get-Process -Name $exeName -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
@@ -68,14 +113,38 @@ Copy-Item $src (Join-Path $mod "Scripts\main.lua") -Force
 Remove-Item $testFile -ErrorAction SilentlyContinue
 Remove-Item $log -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $mod "api_dump.txt") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $mod "anim_dump.txt") -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $mod "LN2Coop.log.prev") -ErrorAction SilentlyContinue
 
 # only the co-op mod, no diagnostics
 $modsTxt = Join-Path $Bin "ue4ss\Mods\mods.txt"
 [System.IO.File]::WriteAllText($modsTxt, "LN2Coop : 1`r`n", (New-Object System.Text.ASCIIEncoding))
 
+# Give the test the known checkpoint and windowed settings, keeping the user's own files aside.
+if ($SaveRoot) {
+    if (Test-Path $saveBackup) { Remove-Item $saveBackup -Recurse -Force }
+    Copy-Item $realUserSaved $saveBackup -Recurse -Force
+    Say "user save/config backed up to $saveBackup"
+    if (Test-Path (Join-Path $testSaved "SaveGames")) {
+        Remove-Item (Join-Path $userSaveGames "*") -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item (Join-Path $testSaved "SaveGames\*") $userSaveGames -Force
+        Say "test checkpoint seeded into the real save folder"
+    } else {
+        Say ("WARNING: no test checkpoint in " + $testSaved)
+    }
+
+    # windowed mode for tests: the user asked to run the game in a window
+    $gus = Join-Path $realUserSaved "Config\WindowsNoEditor\GameUserSettings.ini"
+    Set-IniValue $gus "FullscreenMode" "2"
+    Set-IniValue $gus "LastConfirmedFullscreenMode" "2"
+    Set-IniValue $gus "PreferredFullscreenMode" "2"
+    Set-IniValue $gus "ResolutionSizeX" "1280"
+    Set-IniValue $gus "ResolutionSizeY" "720"
+    Say "game set to windowed 1280x720"
+}
+
 Say "starting the game"
-Start-Process $exe -WorkingDirectory $Bin
+Start-Process $exe -ArgumentList "-windowed", "-ResX=1280", "-ResY=720" -WorkingDirectory $Bin
 
 $deadline = (Get-Date).AddSeconds(150)
 while ((Get-Date) -lt $deadline) {
@@ -89,16 +158,22 @@ Say ("game window up, pid " + $p.Id)
 if (-not (Wait-Log "LVL_MainMenu" 180)) {
     Say "WARNING: main menu not seen in the log; trying ENTER anyway"
 }
-& powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action keys -Keys ENTER | Out-Null
-Say "sent ENTER at the menu"
 
-if (-not (Wait-Log "PLVL_" 240)) { throw "gameplay level did not load (see $log)" }
+# The menu needs a key press, and the press only lands while the game window has the
+# focus, which is flaky in a headless run: try a few times before giving up.
+$levelLoaded = $false
+for ($attempt = 1; $attempt -le 6; $attempt++) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action keys -Keys ENTER -MinConsole | Out-Null
+    Say ("sent ENTER at the menu (attempt " + $attempt + ")")
+    if (Wait-Log "PLVL_" 40) { $levelLoaded = $true; break }
+}
+if (-not $levelLoaded) { throw "gameplay level did not load (see $log)" }
 Say "gameplay level is in"
 if (-not (Wait-Log "input bridge: resolved" 60)) { Say "WARNING: input bridge did not resolve keys" }
 if (-not (Wait-Log "player 2 placed on player 1" 60)) { Say "WARNING: player 2 was not placed" }
 
 # the game pauses when it loses focus; bring it forward and resume
-& powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action keys -Keys ENTER | Out-Null
+& powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action keys -Keys ENTER -MinConsole | Out-Null
 Start-Sleep -Seconds 2
 
 if ($Mode -eq "auto") {
@@ -140,6 +215,35 @@ if ($Mode -eq "auto") {
     Set-Test "0,1,0,0,0,1"
     Start-Sleep -Seconds 4
     Shot "sprint"
+} elseif ($Mode -eq "anim") {
+    # animation diagnostics: player 1 is driven through the same code path as player 2,
+    # so anim_dump.txt shows both pawns moving at the same time
+    Say "anim test: forward for 8 s, player 1 driven too"
+    Set-Test "0,1,0,0,0,0,1"
+    Start-Sleep -Seconds 3
+    Shot "anim-a"
+    Start-Sleep -Seconds 3
+    Shot "anim-b"
+    Set-Test "0,0"
+    Start-Sleep -Seconds 2
+} elseif ($Mode -eq "pose") {
+    # walk animation check: the character walks a short distance so it stays inside the
+    # fixed camera; anim_dump.txt has foot/hand bone positions for every sampled second
+    Say "pose test: idle, then an uninterrupted walk (screenshots pause the game)"
+    Start-Sleep -Seconds 6
+    Set-Test "0,0"
+    Start-Sleep -Milliseconds 1500
+    Shot "pose-idle"
+    Say "walk backwards (away from the ledge) - no screenshots, so the game keeps running"
+    Set-Test "0,-1"
+    Start-Sleep -Seconds 5
+    Say "walk forwards"
+    Set-Test "0,1"
+    Start-Sleep -Milliseconds 1500
+    Set-Test "0,0"
+    Start-Sleep -Milliseconds 1000
+    Shot "pose-final"
+    Start-Sleep -Milliseconds 300
 } elseif ($Mode -eq "jump") {
     Say "jump test: jump, then press A again in the air (must not stack)"
     Set-Test "0,0,0,0,1"
@@ -162,12 +266,21 @@ Start-Sleep -Seconds 1
 Shot "final"
 
 Say "stopping the game to flush the log"
+# the console was minimised so the game could keep the focus; bring it back while the
+# game window still exists (win.ps1 exits early when it cannot find it)
+& powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action restore | Out-Null
 Get-Process -Name $exeName -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
 if (Test-Path $log) {
     Copy-Item $log (Join-Path $OutDir "bridge-test.log") -Force
     Say "log copied to $(Join-Path $OutDir 'bridge-test.log')"
+}
+
+# put the user's own save and settings back before anything else
+Restore-UserSave
+
+if (Test-Path $log) {
     Say "----- interesting log lines -----"
     Select-String -Path $log -Pattern "world ->|create player|player 2 placed|stepped aside|ClientRestart|input bridge|bridge state|test drive|switching to direct|jump|p2 state" |
         ForEach-Object { $_.Line } | Select-Object -Last 80

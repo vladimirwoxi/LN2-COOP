@@ -91,7 +91,7 @@ CreatePlayer(pc, 1, true) -> второй ULocalPlayer, дальше игра с
 
 `UObject::ProcessEvent` (exe RVA `0x2875080`): `if (FunctionFlags & FUNC_Native) { ((NativeFunc)Func)(this, parms, retval); return; }` иначе — выполнение байткода.
 
-## Мод v0.6.1: создание и ведение второго игрока
+## Мод v0.6.2: создание и ведение второго игрока
 
 ### Создание
 
@@ -166,6 +166,61 @@ readSticks(pc2)  -- GetInputAnalogKeyState(Gamepad_*) или bridge_test.txt
 
 `ActionCall` (Y) — parameterless `Helios.ControlledPawn:OnActionCall`; вызов на p2 проходит
 без ошибки, но подбор предмета им не подтверждён. Подбор пока не работает.
+
+### Поворот пешки и анимация ходьбы
+
+У обеих пешек одинаковые настройки: `bUseControllerRotationYaw = false`,
+`bOrientRotationToMovement = true`. Значит поворот делается по вектору `Acceleration`
+в `UCharacterMovementComponent::PhysicsRotation`, а `Acceleration` заполняется только
+игровым вводом. Мост пишет `Velocity`, поэтому у p2 ускорение нулевое и пешка **не
+поворачивается вообще**: модель смотрит в сторону, зафиксированную при постановке.
+
+Анимация читает это напрямую. `ANIM_BP_Player_C` держит две переменные:
+
+| Переменная | Смысл | p1 при ходьбе | p2 до v0.6.2 |
+|---|---|---|---|
+| `Speed` | модуль скорости | 173 | 153 |
+| `ForwardSpeed` | проекция скорости на «вперёд» модели | 173 | 76 |
+| `MaxSpeed` | ограничение скорости для бленда | 110 | 210 |
+
+`ForwardSpeed` = `Speed` только если модель смотрит по движению; при разнице углов 60°
+получается ровно половина. Локомоция видит «ползём боком» и остаётся в холодной позе.
+
+Поэтому мост поворачивает пешку сам (`faceDirection`, 540°/с, коротким путём):
+
+```lua
+local target = math.deg(math.atan(dy, dx))          -- math.atan2 в Lua 5.4 нет
+local delta  = (target - cur + 540) % 360 - 180     -- кратчайшая сторона
+delta = clamp(delta, -turnSpeed * dt, turnSpeed * dt)
+pawn:K2_SetActorRotation({ Pitch = 0, Yaw = cur + delta, Roll = 0 }, false)
+```
+
+Проверка (`anim_dump.txt`, дешёвая строка раз в секунду):
+
+```
+p2 bnd=nil yaw=-20.0 ctrl=160.0 vel=163.1,-59.1,-4.6 spd=173.4 fwd=173.4 ... mode=1 ai=ok
+p2 bnd=nil yaw=160.0 ctrl=160.0 vel=-145.4,52.9,-20.3 spd=154.7 fwd=154.7 ... mode=1 ai=ok
+```
+
+`yaw` совпадает с направлением скорости, `fwd == spd`.
+
+Что проверяли по анимации и что из этого вышло:
+
+- `mesh.VisibilityBasedAnimTickOption = 0`, `bNoSkeletonUpdate = false`,
+  `bEnableUpdateRateOptimizations = false`, `bPauseAnims = false`,
+  `mesh:IsComponentTickEnabled() = true`, `MasterPoseComponent` пуст — тик анимации включён.
+- `mesh:GetNumBones()` = 100, `mesh:GetBoneName(i)` работает (имена вида
+  `skinned_l_ped_bn`, `skinned_r_manus_bn`, `skinned_c_pelvis_bn`), но
+  `mesh:GetBoneLocation(name, space)` и `GetBoneNames`/`GetSocketNames` на этой сборке
+  не вызываются (nil/ошибка), поэтому позу по костям не измерить.
+- `ai:GetCurrentStateName(0)` **роняет игру** — не использовать.
+- `for i in pairs(anim class properties)` (`ForEachProperty`) вешает игровой поток на 6–9 с:
+  свойств у аним-графа тысячи. Диагностика поэтому переехала на прямые чтения
+  `ai.Speed`, `ai.ForwardSpeed`, `ai.InputLength`, `ai.InputAngle`, `ai.InGroundedIdleMove`.
+
+`Speed`/`ForwardSpeed` считаются от скорости, а не от ввода: `AddMovementInput` из моста
+убран, `GetLastMovementInputVector()` у обеих пешек остаётся нулевым — игра вообще не читает
+вектор ввода персонажа на этой сборке.
 
 ### Камера
 

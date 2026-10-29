@@ -1,4 +1,4 @@
--- LN2Coop v0.6.1 - same-PC split-screen co-op for Little Nightmares II (Enhanced Edition)
+-- LN2Coop v0.6.2 - same-PC split-screen co-op for Little Nightmares II (Enhanced Edition)
 --
 -- Player 2 is a *second Mono*: the game's own game mode spawns a second BP_PlayerPawn
 -- (same class as player 1) together with its own BP_PlayerPawnController and camera.
@@ -51,6 +51,24 @@ local CONFIG = {
     jumpZ = 420.0,
     -- periodic state log, seconds
     diagInterval = 1.0,
+    -- temporary diagnostic: a cheap one-line sample per second in anim_dump.txt
+    animDiag = true,
+    animDiagInterval = 1.0,
+    -- full property dump: walks every anim graph node and stalls the game for seconds
+    animDeep = false,
+    -- diagnostics that call extra engine functions on the anim instance; the state name
+    -- probe crashed the game once, so it stays off unless a run explicitly wants it
+    animStates = false,
+    -- bones probing (foot/hand positions) - useful, but it is another engine call path
+    animBones = false,
+    -- reflection dump of the mesh/anim class functions (names only, no calls)
+    animFuncs = false,
+    -- player 1's Mono turns to face the direction it walks (its yaw follows the control
+    -- rotation). The game never turns player 2's pawn, so its mesh keeps the spawn yaw
+    -- and slides sideways; the anim blueprint then sees ForwardSpeed ~= 0.5 * Speed.
+    faceMovement = true,
+    -- how fast the pawn is turned towards the walk direction, degrees per second
+    turnSpeed = 540.0,
     -- player 1 and player 2 must not block each other when they share a spawn point
     ignorePlayerCollision = true,
     -- optional file in the mod folder that overrides pad 2 for tests:
@@ -158,6 +176,252 @@ local function speed2d(v)
     return math.sqrt((v.X or 0) ^ 2 + (v.Y or 0) ^ 2)
 end
 
+-- Temporary animation diagnostics. Writes only to anim_dump.txt, never to the game log.
+local ANIM_DUMP_PATH = MOD_DIR .. "/anim_dump.txt"
+
+local function adiag(fmt, ...)
+    if not CONFIG.animDiag then return end
+    local ok, s = pcall(string.format, fmt, ...)
+    local f = io.open(ANIM_DUMP_PATH, "a")
+    if f then f:write((ok and s or tostring(fmt)) .. "\n") f:close() end
+end
+
+local function objProp(obj, name)
+    local v = nil
+    local ok = pcall(function() v = obj[name] end)
+    if not ok then return nil end
+    if type(v) == "number" or type(v) == "boolean" or type(v) == "string" then return v end
+    if type(v) == "table" and v.X ~= nil then
+        return string.format("%.1f,%.1f,%.1f", v.X or 0, v.Y or 0, v.Z or 0)
+    end
+    if v ~= nil then return fullName(v) end
+    return nil
+end
+
+local function vecText(v)
+    if type(v) == "table" and v.X ~= nil then
+        return string.format("%.1f,%.1f,%.1f", v.X or 0, v.Y or 0, v.Z or 0)
+    end
+    return tostring(v)
+end
+
+local function rotText(r)
+    if type(r) == "table" and r.Yaw ~= nil then
+        return string.format("P%.1f Y%.1f R%.1f", r.Pitch or 0, r.Yaw or 0, r.Roll or 0)
+    end
+    return tostring(r)
+end
+
+local function dumpAnimObject(obj, label)
+    if not isLive(obj) then adiag("  %s: nil", label); return end
+    adiag("  %s: %s", label, fullName(obj))
+    local cls = nil
+    pcall(function() cls = obj:GetClass() end)
+    if not isLive(cls) then return end
+    local count = 0
+    local ok = pcall(function()
+        cls:ForEachProperty(function(pr)
+            local pn = fullName(pr)
+            local name = pn:match("([^:]+)$") or pn
+            -- the anim graph nodes dominate the property list; they are not the
+            -- Blueprint variables that drive the state machine
+            if name:find("^AnimGraphNode") or name:find("^AnimNode")
+                or name == "UberGraphFrame" then
+                return
+            end
+            local ln = name:lower()
+            local hit = ln:find("speed") or ln:find("vel") or ln:find("move")
+                or ln:find("walk") or ln:find("run") or ln:find("sprint")
+                or ln:find("idle") or ln:find("locomotion") or ln:find("input")
+                or ln:find("direction") or ln:find("ground") or ln:find("fall")
+                or ln:find("rotation") or ln:find("yaw") or ln:find("state")
+                or ln:find("anim")
+            if hit then
+                adiag("    %s = %s", name, tostring(objProp(obj, name)))
+                count = count + 1
+                if count >= 120 then return true end
+            end
+        end)
+    end)
+    adiag("    (%d props, ok=%s)", count, tostring(ok))
+end
+
+-- Bones are the only trustworthy animation probe: if the walk cycle runs, a foot/hand
+-- bone moves in component space; a frozen mesh keeps the same numbers frame after frame.
+-- The Mono rig names its bones skinned_<side>_<part>_bn (l_ped = left foot, l_manus = hand).
+local diagBones = {}
+local diagBoneDump = {}
+
+local DIAG_BONE_PARTS = { "ped", "tibia", "manus", "pelvis" }
+
+-- Reflection only (no engine calls): which bone/animation helpers this class really has.
+local function dumpClassFuncs(obj, label, keywords)
+    if not CONFIG.animFuncs then return end
+    local cls = nil
+    local ok = pcall(function() cls = obj:GetClass() end)
+    if not ok or not isLive(cls) then adiag("  [funcs %s] no class", label); return end
+    local hits = {}
+    local okf = pcall(function()
+        cls:ForEachFunction(function(fn)
+            local n = fullName(fn)
+            local name = n:match("([^:]+)$") or n
+            local ln = name:lower()
+            for _, kw in ipairs(keywords) do
+                if ln:find(kw) then
+                    hits[#hits + 1] = name
+                    return
+                end
+            end
+        end)
+    end)
+    table.sort(hits)
+    adiag("  [funcs %s] ok=%s n=%d: %s", label, tostring(okf), #hits,
+        table.concat(hits, ","))
+end
+
+local function pickDiagBones(mesh)
+    local ok, num = pcall(function() return mesh:GetNumBones() end)
+    adiag("  [bones] num ok=%s val=%s", tostring(ok), tostring(num))
+    if not ok or type(num) ~= "number" or num <= 0 then return {} end
+    local picked, all = {}, {}
+    for i = 0, math.min(num, 600) - 1 do
+        local okn, fn = pcall(function() return mesh:GetBoneName(i) end)
+        if okn and fn then
+            local nm = nil
+            pcall(function() nm = fn:ToString() end)
+            if type(nm) == "string" then
+                all[#all + 1] = nm
+                local ln = nm:lower()
+                for _, part in ipairs(DIAG_BONE_PARTS) do
+                    if ln:find("_" .. part .. "_bn") then
+                        picked[#picked + 1] = { name = nm, fname = fn }
+                        break
+                    end
+                end
+            end
+        end
+    end
+    adiag("  bones(%d of %s): %s", #picked, tostring(num), table.concat(all, ","))
+    return picked
+end
+
+local function boneLoc(mesh, entry)
+    local loc, err = nil, nil
+    local ok = pcall(function() loc = mesh:GetBoneLocation(entry.fname, 1) end)
+    if not ok or loc == nil then
+        ok = pcall(function() loc = mesh:GetBoneLocation(entry.name, 1) end)
+    end
+    return loc, err
+end
+
+local function animStateNames(ai)
+    local out = {}
+    for sm = 0, 2 do
+        local nm = nil
+        local ok = pcall(function() nm = ai:GetCurrentStateName(sm) end)
+        out[#out + 1] = ok and tostring(nm) or "err"
+    end
+    return table.concat(out, "|")
+end
+
+-- Cheap per-second sample: a handful of property reads per pawn. The full property
+-- enumeration (dumpAnimObject) walks every anim graph node and stalls the game thread
+-- for seconds, so it only runs when CONFIG.animDeep is on.
+local function animNum(ai, name)
+    local v = nil
+    pcall(function() v = ai[name] end)
+    if type(v) == "number" then return string.format("%.1f", v) end
+    if type(v) == "boolean" then return tostring(v) end
+    return "?"
+end
+
+local function dumpAnimState(tag, p1, p2)
+    if not CONFIG.animDiag then return end
+    adiag("=== %s ===", tag)
+    for i, p in ipairs({ p1, p2 }) do
+        if p and isLive(p.pawn) then
+            local pawn = p.pawn
+            local key = tostring(pawn)
+            local mesh = nil
+            pcall(function() mesh = pawn.Mesh end)
+            if not isLive(mesh) then pcall(function() mesh = pawn.CharacterMesh0 end) end
+            local ai = nil
+            if isLive(mesh) then
+                pcall(function() ai = mesh.AnimScriptInstance end)
+                if not isLive(ai) then pcall(function() ai = mesh:GetAnimInstance() end) end
+            end
+            local ar, crot = nil, nil
+            pcall(function() ar = pawn:K2_GetActorRotation() end)
+            pcall(function() crot = p.pc:GetControlRotation() end)
+            local v = velocityOf(pawn)
+            local mv = movementComp(pawn)
+            local ext = nil
+            if isLive(mesh) then
+                local b = nil
+                pcall(function() b = mesh.Bounds end)
+                if type(b) == "table" then
+                    pcall(function() ext = b.BoxExtent end)
+                end
+            end
+            adiag("p%d bnd=%s yaw=%s ctrl=%s vel=%s spd=%s fwd=%s inLen=%s inAng=%s idleMove=%s mode=%s ai=%s",
+                i,
+                vecText(ext),
+                type(ar) == "table" and string.format("%.1f", ar.Yaw or 0) or "?",
+                type(crot) == "table" and string.format("%.1f", crot.Yaw or 0) or "?",
+                vecText(v),
+                isLive(ai) and animNum(ai, "Speed") or "-",
+                isLive(ai) and animNum(ai, "ForwardSpeed") or "-",
+                isLive(ai) and animNum(ai, "InputLength") or "-",
+                isLive(ai) and animNum(ai, "InputAngle") or "-",
+                isLive(ai) and animNum(ai, "InGroundedIdleMove") or "-",
+                mv and moveMode(mv) or "?",
+                isLive(ai) and "ok" or "nil")
+            if CONFIG.animDeep then
+                adiag("  [deep] pawn=%s", shortName(pawn))
+                local last, pend = nil, nil
+                pcall(function() last = pawn:GetLastMovementInputVector() end)
+                pcall(function() pend = pawn:GetPendingMovementInputVector() end)
+                adiag("  input last=%s pend=%s", vecText(last), vecText(pend))
+                if isLive(mesh) then
+                    for _, f in ipairs({
+                        "VisibilityBasedAnimTickOption", "bNoSkeletonUpdate",
+                        "bEnableUpdateRateOptimizations", "bPauseAnims",
+                        "bRecentlyRendered", "AnimClass", "MasterPoseComponent",
+                    }) do
+                        adiag("  mesh.%s=%s", f, tostring(objProp(mesh, f)))
+                    end
+                    if isLive(ai) then
+                        if CONFIG.animStates then
+                            adiag("  anim state: %s", animStateNames(ai))
+                        end
+                        dumpAnimObject(ai, "anim")
+                    end
+                end
+                if mv then
+                    local acc = nil
+                    pcall(function() acc = mv:GetCurrentAcceleration() end)
+                    adiag("  rot: useCtrlYaw=%s orientToMove=%s useDesiredRot=%s acc=%s",
+                        tostring(objProp(pawn, "bUseControllerRotationYaw")),
+                        tostring(objProp(mv, "bOrientRotationToMovement")),
+                        tostring(objProp(mv, "bUseControllerDesiredRotation")),
+                        vecText(acc))
+                end
+                dumpAnimObject(pawn, "pawnvars")
+                local loco = nil
+                pcall(function() loco = pawn.CharMoveComp end)
+                if not isLive(loco) then pcall(function() loco = pawn.LocomotionComponent2 end) end
+                if isLive(loco) then dumpAnimObject(loco, "loco") end
+                if CONFIG.animBones and isLive(mesh) then
+                    if not diagBones[key] then
+                        diagBones[key] = pickDiagBones(mesh)
+                        dumpClassFuncs(mesh, "mesh", { "bone", "location", "transform", "pose" })
+                    end
+                end
+            end
+        end
+    end
+end
+
 local gs, gms
 local lastWorld = ""
 local lastPlacedPawn = nil
@@ -165,6 +429,7 @@ local lastCreate = 0
 local loggedInputFor = nil
 local lastReplace = 0
 local clientRestartedFor = nil
+local P1 = nil
 local P2 = nil
 
 local function ensureSingletons()
@@ -414,7 +679,7 @@ local function upkeep()
     end
 
     local p1, p2 = players[1], players[2]
-    P2 = p2
+    P1, P2 = p1, p2
     if not isMonoPawn(p2.pawn) then
         -- the game respawns pawns on checkpoint loads; give it a moment
         return
@@ -425,6 +690,7 @@ local function upkeep()
     local pawnName = fullName(p2.pawn)
     if lastPlacedPawn ~= pawnName then
         placePlayer2(p1, p2, "level start")
+        dumpAnimState("placed", p1, p2)
         return
     end
 
@@ -438,7 +704,7 @@ LoopAsync(CONFIG.interval, function()
     end)
 end)
 
-log("v0.6.1 loaded (player 2 = second Mono, Six stays AI, input bridge), co-op %s, dir %s",
+log("v0.6.2 loaded (player 2 = second Mono, Six stays AI, input bridge), co-op %s, dir %s",
     CONFIG.enabled and "on" or "off", MOD_DIR)
 
 
@@ -466,6 +732,7 @@ local BRIDGE = {
     testActive = false,
     testNextRead = 0,
     lastDiag = 0,
+    lastAnimDiag = 0,
     lastSig = nil,
     lastButtonSig = nil,
     lastSprint = false,
@@ -615,6 +882,9 @@ local function readTestDrive()    local t = now()
         ry = math.max(-1, math.min(1, nums[4] or 0)),
         jump = (nums[5] or 0) ~= 0,
         sprint = (nums[6] or 0) ~= 0,
+        -- diagnostics only: drive player 1 through the same code path so the two
+        -- pawns can be compared in one run
+        p1too = (nums[7] or 0) ~= 0,
     }
     if not BRIDGE.testActive then
         BRIDGE.testActive = true
@@ -627,7 +897,7 @@ end
 
 local function readSticks(pc)
     local t = readTestDrive()
-    if t then return t.mx, t.my, t.rx, t.ry, t.jump, t.sprint, true end
+    if t then return t.mx, t.my, t.rx, t.ry, t.jump, t.sprint, true, t.p1too end
     local mx = keyValue(pc, "Gamepad_LeftX")
     local my = keyValue(pc, "Gamepad_LeftY")
     local rx = keyValue(pc, "Gamepad_RightX")
@@ -642,7 +912,7 @@ local function readSticks(pc)
     if math.abs(ry) < BRIDGE.lookDeadzone then ry = 0.0 end
     -- the game maps ActionSprint to Gamepad_FaceButton_Left (X on an Xbox pad)
     return mx, my, rx, ry, keyDown(pc, "Gamepad_FaceButton_Bottom"),
-        keyDown(pc, "Gamepad_FaceButton_Left"), false
+        keyDown(pc, "Gamepad_FaceButton_Left"), false, false
 end
 
 local function moveDirection(pc, mx, my)
@@ -704,6 +974,32 @@ local function drivePawn(pawn, dx, dy, dt, sprint)
     return movedX or movedY
 end
 
+-- Player 1's Mono turns to face the direction it walks: its yaw follows the player's
+-- control rotation. The game only does that for the first player, so player 2's mesh
+-- keeps its spawn yaw and slides sideways; the animation blueprint then sees
+-- ForwardSpeed ~= 0.5 * Speed and never plays a proper walk cycle. Turn it here.
+local function faceDirection(pawn, dx, dy, dt)
+    if not CONFIG.faceMovement then return end
+    if math.abs(dx) < 0.001 and math.abs(dy) < 0.001 then return end
+    local ar = nil
+    pcall(function() ar = pawn:K2_GetActorRotation() end)
+    if type(ar) ~= "table" or ar.Yaw == nil then return end
+    local target = math.deg(math.atan(dy, dx))
+    local cur = ar.Yaw
+    -- shortest way round, then limit the turn speed
+    local delta = (target - cur + 540.0) % 360.0 - 180.0
+    local maxStep = CONFIG.turnSpeed * dt
+    if math.abs(delta) > maxStep then
+        delta = (delta > 0) and maxStep or -maxStep
+    end
+    local ok = pcall(function()
+        pawn:K2_SetActorRotation({ Pitch = 0.0, Yaw = cur + delta, Roll = 0.0 }, false)
+    end)
+    if not ok then
+        pcall(function() pawn:SetActorRotation({ Pitch = 0.0, Yaw = cur + delta, Roll = 0.0 }) end)
+    end
+end
+
 local function applyCamera(pc, rx, ry, dt)
     if rx == 0.0 and ry == 0.0 then return end
     local ok, rot = pcall(function() return pc:GetControlRotation() end)
@@ -743,10 +1039,12 @@ local function bridgeDiag(pc, pawn, mx, my, rx, ry, isTest)
     local crot = nil
     pcall(function() crot = pc:GetControlRotation() end)
     if type(crot) == "table" then yaw, pitch = crot.Yaw or 0, crot.Pitch or 0 end
-    log("p2 state: pos=%s vel=%.0f,%.0f,%.0f speed=%.0f mode=%s moveIgnored=%s pawnIgnored=%s stick=%.2f,%.2f,%.2f,%.2f yaw=%.0f pitch=%.0f test=%s",
+    local paused = nil
+    pcall(function() paused = gs:IsGamePaused(pawn) end)
+    log("p2 state: pos=%s vel=%.0f,%.0f,%.0f speed=%.0f mode=%s moveIgnored=%s pawnIgnored=%s stick=%.2f,%.2f,%.2f,%.2f yaw=%.0f pitch=%.0f paused=%s test=%s",
         posText(p), v.X or 0, v.Y or 0, v.Z or 0, speed2d(v),
         moveMode(mv), tostring(ignored), tostring(pawnIgnored),
-        mx, my, rx, ry, yaw, pitch, tostring(isTest))
+        mx, my, rx, ry, yaw, pitch, tostring(paused), tostring(isTest))
 end
 
 local function bridgeStep()
@@ -756,7 +1054,7 @@ local function bridgeStep()
     local pc, pawn = P2.pc, P2.pawn
     local dt = CONFIG.bridgeInterval / 1000.0
 
-    local mx, my, rx, ry, jump, sprint, isTest = readSticks(pc)
+    local mx, my, rx, ry, jump, sprint, isTest, p1too = readSticks(pc)
     -- sprint comes from readSticks: X button on the pad, or the test-drive file
     if sprint ~= BRIDGE.lastSprint then
         BRIDGE.lastSprint = sprint
@@ -783,6 +1081,16 @@ local function bridgeStep()
     if moving then
         local dx, dy = moveDirection(pc, mx, my)
         drivePawn(pawn, dx, dy, dt, sprint)
+        faceDirection(pawn, dx, dy, dt)
+        -- diagnostics: run player 1 through the very same path so the animation of the
+        -- two pawns can be compared in a single test run
+        if p1too and P1 and isLive(P1.pawn) then
+            drivePawn(P1.pawn, dx, dy, dt, sprint)
+        end
+    end
+    if CONFIG.animDiag and now() - BRIDGE.lastAnimDiag >= CONFIG.animDiagInterval then
+        BRIDGE.lastAnimDiag = now()
+        dumpAnimState(moving and "moving" or "idle", P1, P2)
     end
 
     if jump and not BRIDGE.jumpPrev then requestJump(pawn) end

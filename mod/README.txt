@@ -1,4 +1,4 @@
-LN2Coop 0.6.1 — Little Nightmares II, split-screen co-op on one PC
+LN2Coop 0.6.2 — Little Nightmares II, split-screen co-op on one PC
 ===============================================================
 
 Репозиторий проекта (private): https://github.com/vladimirwoxi/LN2-COOP
@@ -26,7 +26,7 @@ BP_PlayerPawn (та же модель, те же способности, сво�
 
 Управление игроком 2
 --------------------
-  левый стик  — ходьба,
+  левый стик  — ходьба (модель поворачивается в сторону движения),
   X           — спринт (удерживать),
   правый стик — камера,
   A           — прыжок.
@@ -117,7 +117,7 @@ UE4SS.dll.orig, если хотите оставить UE4SS без патча).
 
 ------------------------------------------------------------------------------
 
-LN2Coop 0.6.1 — English
+LN2Coop 0.6.2 — English
 ----------------------
 Same-PC split-screen co-op for Little Nightmares II (Enhanced Edition).
 Player 2 is a second Mono: the game's own game mode spawns a second
@@ -127,7 +127,8 @@ stays the game's AI companion.
 Connect both gamepads before launching. Start the game normally, continue,
 and once a level loads the second Mono appears and the screen splits.
 
-Player 2 controls: left stick walks, X sprints, right stick turns the camera, A jumps.
+Player 2 controls: left stick walks (the model turns towards the walk direction),
+X sprints, right stick turns the camera, A jumps.
 The game runs none of its own actions for player 2, so the mod reads pad 2
 and drives the pawn itself (CharacterMovement.Velocity, SetControlRotation,
 MOVE_Falling + vertical velocity). The raw stick axes are inverted on this
@@ -145,7 +146,7 @@ UFunction call silently returns zero on this build. UE4SS.dll.orig is the
 untouched original; patch_ue4ss.ps1 re-applies the patch.
 
 Tested: second Mono creation, split screen, placement, level start, walking
-forward/back/strafe from pad 2, sprint on X, camera yaw, jump on A, on the
-user's installed game. Picking up items and other interactions do not work
-yet; doors, lifts and enemies are still single-player logic. The game pauses
-when its window loses focus.
+forward/back/strafe from pad 2, the model turning towards the walk direction,
+sprint on X, camera yaw, jump on A, on the user's installed game. Picking up
+items and other interactions do not work yet; doors, lifts and enemies are
+still single-player logic. The game pauses when its window loses focus.
