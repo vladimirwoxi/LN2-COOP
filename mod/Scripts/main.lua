@@ -1,4 +1,4 @@
--- LN2Coop v0.6.2 - same-PC split-screen co-op for Little Nightmares II (Enhanced Edition)
+-- LN2Coop v0.7 - same-PC split-screen co-op for Little Nightmares II (Enhanced Edition)
 --
 -- Player 2 is a *second Mono*: the game's own game mode spawns a second BP_PlayerPawn
 -- (same class as player 1) together with its own BP_PlayerPawnController and camera.
@@ -63,6 +63,12 @@ local CONFIG = {
     animBones = false,
     -- one-shot dump of the pawn's components and the pose getters that answer
     animInspect = true,
+    -- player 2 can pick carryables up with RT (the game's AxisGrab axis)
+    pickup = true,
+    -- how close player 2 has to be to a carryable, units
+    pickupRadius = 350.0,
+    -- minimum time between pickup/drop actions, seconds
+    pickupCooldown = 0.4,
     -- reflection dump of the mesh/anim class functions (names only, no calls)
     animFuncs = false,
     -- player 1's Mono turns to face the direction it walks (its yaw follows the control
@@ -796,7 +802,7 @@ LoopAsync(CONFIG.interval, function()
     end)
 end)
 
-log("v0.6.2 loaded (player 2 = second Mono, Six stays AI, input bridge), co-op %s, dir %s",
+log("v0.7 loaded (player 2 = second Mono, Six stays AI, input bridge, pickup), co-op %s, dir %s",
     CONFIG.enabled and "on" or "off", MOD_DIR)
 
 
@@ -829,6 +835,10 @@ local BRIDGE = {
     lastSig = nil,
     lastButtonSig = nil,
     lastSprint = false,
+    grabPrev = false,
+    heldPickup = nil,
+    lastPickupAt = 0,
+    testRadius = 0,
 }
 
 local bridgeKeys = nil
@@ -889,6 +899,7 @@ local function resolveBridgeKeys()
         "Gamepad_FaceButton_Bottom", "Gamepad_FaceButton_Right",
         "Gamepad_FaceButton_Left", "Gamepad_FaceButton_Top",
         "Gamepad_RightShoulder", "Gamepad_LeftShoulder",
+        "Gamepad_RightTriggerAxis", "Gamepad_LeftTriggerAxis",
     }
     local out, left = {}, #wanted
     local function scan(arr)
@@ -947,9 +958,11 @@ end
 
 -- Optional test drive: a small file in the mod folder replaces pad 2 with fixed values,
 -- so the movement path can be checked without hands on the second gamepad.
-local function readTestDrive()    local t = now()
-    if t < BRIDGE.testNextRead then return BRIDGE.testValues end
-    BRIDGE.testNextRead = t + 0.2
+local function readTestDrive()
+    -- Poll every few bridge ticks instead of using a clock: the file has to be noticed
+    -- promptly while a test is changing it.
+    BRIDGE.testTick = (BRIDGE.testTick or 0) + 1
+    if BRIDGE.testTick % 6 ~= 0 then return BRIDGE.testValues end
     local path = MOD_DIR .. "/" .. CONFIG.testDriveFile
     local f = io.open(path, "r")
     if not f then
@@ -989,14 +1002,19 @@ local function readTestDrive()    local t = now()
         ry = math.max(-1, math.min(1, nums[4] or 0)),
         jump = (nums[5] or 0) ~= 0,
         sprint = (nums[6] or 0) ~= 0,
-        -- diagnostics only: drive player 1 through the same code path so the two
+        -- test-only: drive player 1 through the same code path so the two
         -- pawns can be compared in one run
         p1too = (nums[7] or 0) ~= 0,
+        -- test-only: press/release the grab (RT) button
+        grab = (nums[14] or 0) ~= 0,
+        -- test-only: override the pickup radius for the run
+        pickupRadius = nums[15] or 0,
     }
     if not BRIDGE.testActive then
         BRIDGE.testActive = true
-        log("test drive: on L=(%.2f,%.2f) R=(%.2f,%.2f) jump=%s sprint=%s",
-            v.mx, v.my, v.rx, v.ry, tostring(v.jump), tostring(v.sprint))
+        log("test drive: on L=(%.2f,%.2f) R=(%.2f,%.2f) jump=%s sprint=%s grab=%s radius=%.0f",
+            v.mx, v.my, v.rx, v.ry, tostring(v.jump), tostring(v.sprint),
+            tostring(v.grab), v.pickupRadius or 0)
     end
     BRIDGE.testValues = v
     return v
@@ -1081,6 +1099,120 @@ local function drivePawn(pawn, dx, dy, dt, sprint)
     return movedX or movedY
 end
 
+local function distance3d(a, b)
+    local dx = (a.X or 0) - (b.X or 0)
+    local dy = (a.Y or 0) - (b.Y or 0)
+    local dz = (a.Z or 0) - (b.Z or 0)
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+-- Player 2's pickup uses the game's own carryable component: PickupComponent:TryPickUp(Holder)
+-- attaches the item to the holder's hand. The component is found among the level's
+-- PickupComponent instances and the closest one wins.
+local function pickupCandidates(pawn, radius)
+    local comps = nil
+    local ok = pcall(function() comps = FindAllOf("PickupComponent") end)
+    if not ok or type(comps) ~= "table" then return {} end
+    local base = locOf(pawn)
+    if not base then return {} end
+    local rows = {}
+    for _, c in ipairs(comps) do
+        local owner = nil
+        pcall(function() owner = c:GetOwner() end)
+        if isLive(owner) then
+            local loc = locOf(owner)
+            if loc then
+                local d = distance3d(loc, base)
+                if d <= radius then rows[#rows + 1] = { c = c, owner = owner, d = d } end
+            end
+        end
+    end
+    table.sort(rows, function(a, b) return a.d < b.d end)
+    return rows
+end
+
+local function tryPickup(pawn)
+    if not CONFIG.pickup then return false end
+    local t = now()
+    if t - (BRIDGE.lastPickupAt or 0) < CONFIG.pickupCooldown then return false end
+    BRIDGE.lastPickupAt = t
+    local radius = (BRIDGE.testRadius and BRIDGE.testRadius > 0)
+        and BRIDGE.testRadius or CONFIG.pickupRadius
+    log("pickup: looking for a carryable within %.0f units", radius)
+    local rows = pickupCandidates(pawn, radius)
+    if #rows == 0 then
+        log("pickup: no carryable within %.0f units", radius)
+        return false
+    end
+    local function attempt(tag, row)
+        local ok, res = pcall(function() return row.c:TryPickUp(pawn) end)
+        log("pickup %s: %s d=%.0f -> ok=%s res=%s", tag, shortName(row.owner), row.d,
+            tostring(ok), tostring(res))
+        if ok and res == true then
+            BRIDGE.heldPickup = row.c
+            local holder = nil
+            pcall(function() holder = row.c:GetHolder() end)
+            log("pickup: holding %s holder=%s isP2=%s", shortName(row.owner),
+                fullName(holder), tostring(holder == pawn))
+            return true
+        end
+        return false
+    end
+    for i = 1, math.min(#rows, 3) do
+        if attempt("try" .. i, rows[i]) then return true end
+    end
+    -- The second player's pickup interface sits in a stowed state on this build, and the first
+    -- TryPickUp is answered with false. ForceStowOrDrop clears that state; the next call works.
+    local iface = nil
+    pcall(function() iface = pawn:GetPlayerPickupInterface() end)
+    if isLive(iface) then
+        local okf = pcall(function() iface:ForceStowOrDrop() end)
+        log("pickup: first attempts refused, ForceStowOrDrop ok=%s", tostring(okf))
+        for i = 1, math.min(#rows, 3) do
+            if attempt("retry" .. i, rows[i]) then return true end
+        end
+    end
+    return false
+end
+
+local function releaseHeldPickup(pawn, throw)
+    local c = BRIDGE.heldPickup
+    if not isLive(c) then
+        BRIDGE.heldPickup = nil
+        return false
+    end
+    if throw then
+        log("throw is not implemented for player 2 (TryThrow froze the game); putting the item down")
+    end
+    -- PickupComponent:TryPutdown/TryThrow froze the game when called for player 2. The
+    -- inventory/interface drop path was safe in tests, so it is used instead.
+    local inv = nil
+    pcall(function() inv = pawn:GetInventoryComponent() end)
+    local ok, res = false, nil
+    if isLive(inv) then
+        ok, res = pcall(function() return inv:PutDownItemImmediately() end)
+        log("putdown inventory: ok=%s res=%s", tostring(ok), tostring(res))
+    end
+    local iface = nil
+    pcall(function() iface = pawn:GetPlayerPickupInterface() end)
+    if (not (ok and res == true)) and isLive(iface) then
+        local ok2, res2 = pcall(function() return iface:PutDownItemImmediately(false) end)
+        log("putdown interface: ok=%s res=%s", tostring(ok2), tostring(res2))
+        ok, res = ok2, res2
+    end
+    if ok and res == true then
+        BRIDGE.heldPickup = nil
+        return true
+    end
+    -- Last resort: stow/drop through the interface. This call was safe in testing.
+    if isLive(iface) then
+        local ok3, res3 = pcall(function() return iface:ForceStowOrDrop() end)
+        log("putdown fallback ForceStowOrDrop: ok=%s res=%s", tostring(ok3), tostring(res3))
+        BRIDGE.heldPickup = nil
+    end
+    return false
+end
+
 -- Player 1's Mono turns to face the direction it walks: its yaw follows the player's
 -- control rotation. The game only does that for the first player, so player 2's mesh
 -- keeps its spawn yaw and slides sideways; the animation blueprint then sees
@@ -1148,10 +1280,11 @@ local function bridgeDiag(pc, pawn, mx, my, rx, ry, isTest)
     if type(crot) == "table" then yaw, pitch = crot.Yaw or 0, crot.Pitch or 0 end
     local paused = nil
     pcall(function() paused = gs:IsGamePaused(pawn) end)
-    log("p2 state: pos=%s vel=%.0f,%.0f,%.0f speed=%.0f mode=%s moveIgnored=%s pawnIgnored=%s stick=%.2f,%.2f,%.2f,%.2f yaw=%.0f pitch=%.0f paused=%s test=%s",
+    log("p2 state: pos=%s vel=%.0f,%.0f,%.0f speed=%.0f mode=%s moveIgnored=%s pawnIgnored=%s stick=%.2f,%.2f,%.2f,%.2f yaw=%.0f pitch=%.0f paused=%s held=%s test=%s",
         posText(p), v.X or 0, v.Y or 0, v.Z or 0, speed2d(v),
         moveMode(mv), tostring(ignored), tostring(pawnIgnored),
-        mx, my, rx, ry, yaw, pitch, tostring(paused), tostring(isTest))
+        mx, my, rx, ry, yaw, pitch, tostring(paused), tostring(BRIDGE.heldPickup ~= nil),
+        tostring(isTest))
 end
 
 local function bridgeStep()
@@ -1170,7 +1303,27 @@ local function bridgeStep()
             local okp = pcall(function() gs:SetGamePaused(pawn, td.pause) end)
             log("test pause: %s ok=%s", tostring(td.pause), tostring(okp))
         end
+        if td.pickupRadius and td.pickupRadius > 0 then
+            BRIDGE.testRadius = td.pickupRadius
+        end
     end
+    -- RT is the game's AxisGrab axis; a press picks a carryable up or puts the held one down
+    local grabAnalog = 0.0
+    if td then
+        grabAnalog = td.grab and 1.0 or 0.0
+    else
+        local g = keyValue(pc, "Gamepad_RightTriggerAxis")
+        if type(g) == "number" then grabAnalog = g end
+    end
+    local grabNow = grabAnalog > 0.5
+    if grabNow and not BRIDGE.grabPrev and CONFIG.pickup then
+        if BRIDGE.heldPickup then
+            releaseHeldPickup(pawn, false)
+        else
+            tryPickup(pawn)
+        end
+    end
+    BRIDGE.grabPrev = grabNow
     -- sprint comes from readSticks: X button on the pad, or the test-drive file
     if sprint ~= BRIDGE.lastSprint then
         BRIDGE.lastSprint = sprint
@@ -1253,7 +1406,16 @@ local function bridgeStep()
         dumpAnimState(moving and "moving" or "idle", P1, P2)
     end
 
-    if jump and not BRIDGE.jumpPrev then requestJump(pawn) end
+    if jump and not BRIDGE.jumpPrev then
+        if BRIDGE.heldPickup then
+            -- TryThrow() on a player-2-held item froze the game in testing, so A only puts
+            -- the item down for now; throwing stays unimplemented until the crash is understood.
+            log("throw requested while carrying: putting the item down instead")
+            releaseHeldPickup(pawn, false)
+        else
+            requestJump(pawn)
+        end
+    end
     BRIDGE.jumpPrev = jump
 
     -- Character::Jump() does not take for player 2 (the game ignores p2's jump input),

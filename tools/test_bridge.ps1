@@ -10,9 +10,11 @@
 #
 # -Mode pad: do not write bridge_test.txt; just launch, wait and collect logs so a
 #            human can move the second gamepad.
+# -Mode pickup: RT picks the nearest PickupComponent (test radius 2000), walk with
+#            the item, RT again puts it down.
 
 param(
-    [ValidateSet("auto", "pad", "quick", "jump", "sprint", "anim", "pose", "pad1", "pose2", "pose3", "pose4", "pose5", "pose6")][string]$Mode = "auto",
+    [ValidateSet("auto", "pad", "quick", "jump", "sprint", "anim", "pose", "pad1", "pose2", "pose3", "pose4", "pose5", "pose6", "pickup")][string]$Mode = "auto",
     [int]$PadSeconds = 12,
     [string]$Bin = "G:\LN2\test-install\Helios\Binaries\Win64",
     [string]$OutDir = "G:\LN2\local",
@@ -369,6 +371,35 @@ if ($Mode -eq "auto") {
     Shot "sclStop"
     Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,0"
     Start-Sleep -Milliseconds 400
+} elseif ($Mode -eq "pickup") {
+    # player 2 pickup: RT (AxisGrab) with a long test radius, walk with the item,
+    # then RT again to put it down. The mesh is scaled up so the item is visible.
+    Say "pickup test: RT to pick up the nearest carryable (test radius 2000)"
+    Start-Sleep -Seconds 6
+    # release first: the bridge's grab state may still be "pressed" from the real pad
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,3,0,2000"
+    Start-Sleep -Seconds 2
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,3,1,2000"
+    Start-Sleep -Seconds 8
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,3,0,2000"
+    Start-Sleep -Seconds 3
+    Shot "pickup-held"
+    Say "pickup test: walk backwards while carrying"
+    Set-Test "0,-1,0,0,0,0,0,0,0,0,0,0,3,0,2000"
+    Start-Sleep -Seconds 2
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,3,0,2000"
+    Start-Sleep -Seconds 1
+    Shot "pickup-walk"
+    Say "pickup test: RT again to put the item down"
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,3,0,2000"
+    Start-Sleep -Seconds 1
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,3,1,2000"
+    Start-Sleep -Seconds 2
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,3,0,2000"
+    Start-Sleep -Seconds 4
+    Shot "pickup-putdown"
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 500
 } elseif ($Mode -eq "jump") {
     Say "jump test: jump, then press A again in the air (must not stack)"
     Set-Test "0,0,0,0,1"

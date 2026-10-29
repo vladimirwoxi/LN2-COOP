@@ -91,7 +91,7 @@ CreatePlayer(pc, 1, true) -> второй ULocalPlayer, дальше игра с
 
 `UObject::ProcessEvent` (exe RVA `0x2875080`): `if (FunctionFlags & FUNC_Native) { ((NativeFunc)Func)(this, parms, retval); return; }` иначе — выполнение байткода.
 
-## Мод v0.6.2: создание и ведение второго игрока
+## Мод v0.7: создание и ведение второго игрока
 
 ### Создание
 
@@ -246,6 +246,59 @@ mv.Velocity = { X = v.X, Y = v.Y, Z = 420 }
 повторное нажатие A в воздухе складывалось бы в двойной прыжок. Повторное нажатие в воздухе
 проверено: второй `jump requested` проходит, но высота не добавляется.
 
+### Подбор предметов (v0.7)
+
+Подбор — не действие игрока, а метод **компонента предмета**. У обуви, шишек, палок и
+оружия есть `PickupComponent`; его вызывают так:
+
+```lua
+local comps = FindAllOf("PickupComponent")           -- ~33 на уровне Wilderness
+for _, c in ipairs(comps) do
+    local owner = c:GetOwner()                       -- BP_Carryable_* актор
+    ...
+    local ok = c:TryPickUp(pawn)                     -- Holder:ObjectProperty -> BoolProperty
+    if ok then
+        -- c:GetHolder() теперь указывает на pawn
+    end
+end
+```
+
+| Класс / функция | Параметры | Смысл |
+|---|---|---|
+| `PickupComponent:TryPickUp` | `Holder:Object` → `bool` | взять предмет в руки пешке-держателю |
+| `PickupComponent:TryThrow` | → `bool` | **роняет игру у p2, не вызывать** |
+| `PickupComponent:TryPutdown` | → `bool` | **роняет игру у p2, не вызывать** |
+| `PickupComponent:ForceDrop` | `isThrown:bool` → `bool` | не проверено |
+| `PickupComponent:GetHolder` | → `Actor` | кто держит; после успеха — p2 |
+| `InventoryComponent:PutDownItemImmediately` | → `bool` | у p2 `false`, но не падает |
+| `PlayerPickupInterface:PutDownItemImmediately` | `onDeath:bool` → `bool` | у p2 `false` |
+| `PlayerPickupInterface:ForceStowOrDrop` | — | безопасно; сбрасывает «stowed» и кладёт предмет |
+
+Особенности этой сборки:
+
+- **Радиус не проверяется** внутри `TryPickUp`: p1 в тесте подобрал обувь на расстоянии
+  1391 юнита. Мод сам фильтрует по `CONFIG.pickupRadius` (350) и берёт ближайший компонент.
+- **Первый вызов для p2 возвращает `false`** — интерфейс подбора второго игрока в
+  «stowed»-состоянии. После `PlayerPickupInterface:ForceStowOrDrop()` следующий
+  `TryPickUp` возвращает `true`. В моде это retry после первых отказов.
+- **`TryThrow`/`TryPutdown` у p2 мгновенно роняют игру** (проверено дважды: последняя
+  строка лога — нажатие кнопки, процесса больше нет). Бросок поэтому отключён; A с
+  предметом кладёт его через `ForceStowOrDrop`.
+- **`GetCurrentCarryable()`/`GetCurrentlyHeldPickup()` возвращают мусорный UObject** даже при
+  пустых руках, а `GetFullName()` на нём вешает поток. Для состояния «в руках» мод держит
+  `BRIDGE.heldPickup` и проверяет `GetHolder()`.
+- **`FindAllOf("Actor")` не находит акторов текущего мира** (в тесте 4169 объектов, 0 в
+  радиусе 80 м вокруг p1). Предметы ищутся через `FindAllOf("PickupComponent")`.
+
+Проверено в логе (`test_bridge.ps1 -Mode pickup`):
+
+```
+pickup: holding BP_Carryable_ShoeBig_C_2147481067 holder=BP_PlayerPawn_C_2147481252 isP2=true
+p2 state: ... held=true test=true      (во время ходьбы с предметом)
+putdown fallback ForceStowOrDrop: ok=true
+p2 state: ... held=false test=true
+```
+
 ### Тестовый режим
 
 `bridge_test.txt` в папке мода: `x,y` или `x,y,rx,ry,jump,sprint` (значения −1…1). Пока файл есть,
@@ -274,13 +327,13 @@ mv.Velocity = { X = v.X, Y = v.Y, Z = 420 }
 | Кнопка A не видна через `IsInputKeyDown` | `IsInputKeyDown` = false, `GetInputAnalogKeyState` = 1.00; аналоговый fallback в `keyDown` |
 | `SetControlRotation` крутит камеру p2 | yaw 160 → 303 |
 | `SetMovementMode(MOVE_Falling)+Velocity.Z` прыгает | z 634 → 679 → 634 |
-| `ActionCall` (Y) = `OnActionCall()` без параметров | UFunction `NumParms=0`; вызов на p2 проходит, подбор предмета не подтверждён |
+| `ActionCall` (Y) = `OnActionCall()` без параметров | UFunction `NumParms=0`; вызов на p2 проходит, подбор им не делается |
+| `AxisGrab` (RT) + `PickupComponent:TryPickUp(p2)` | подбор работает после `ForceStowOrDrop`; `holder=BP_PlayerPawn_C... isP2=true` |
 
 Вывод: штатного пути «отдать второй пад второму локальному игроку» в этой игре нет — ввод
 однопользовательский. Единственный рабочий путь — собственный мост: читать пад 2 и вести
-пешку через `CharacterMovement`. Ходьба, спринт, камера и прыжок сделаны; подбор предметов
-и остальные интеракции ещё нужно находить (вероятно, `PlayerPickupInterface` и pickup-актёры
-или автоматический подбор).
+пешку через `CharacterMovement`. Ходьба, спринт, камера, прыжок и подбор предметов сделаны;
+двери, рычаги и захваты ещё нужно находить (см. `UsableObjectComponent`/`HeliosInteraction`).
 
 ## Важные классы и миры
 

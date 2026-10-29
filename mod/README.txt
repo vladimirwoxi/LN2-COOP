@@ -1,4 +1,4 @@
-LN2Coop 0.6.2 — Little Nightmares II, split-screen co-op on one PC
+LN2Coop 0.7 — Little Nightmares II, split-screen co-op on one PC
 ===============================================================
 
 Репозиторий проекта (private): https://github.com/vladimirwoxi/LN2-COOP
@@ -29,15 +29,21 @@ BP_PlayerPawn (та же модель, те же способности, сво�
   левый стик  — ходьба (модель поворачивается в сторону движения),
   X           — спринт (удерживать),
   правый стик — камера,
-  A           — прыжок.
+  A           — прыжок,
+  RT          — взять предмет / положить взятый.
+
+Подбор работает через игровой PickupComponent: второй Моно берёт ближайший
+предмет в радиусе 3.5 м. Взять можно обувь, шишки, палки, оружие и другие
+предметы с компонентом PickupComponent. Бросок (A с предметом) пока заменён
+на «положить»: прямой вызов TryThrow/TryPutdown у второго игрока роняет игру.
+
+Остальные взаимодействия (захват, двери, рычаги, кнопки) пока НЕ работают:
+игра не выполняет свои действия для второго игрока, их нужно подключать
+отдельно.
 
 В момент появления второй Моно стоит точно в точке первого: это проверенная
 точка на полу, иначе пешка оказывается вне уровня и проваливается. Двиньте
 левый стик — и он отделится и пойдёт сам.
-
-Подбор предметов и взаимодействия (захват, двери, рычаги) пока НЕ работают:
-игра не выполняет свои действия для второго игрока, их нужно подключать
-отдельно.
 
 Выключить кооп (играть одному)
 ------------------------------
@@ -75,11 +81,11 @@ ProcessEvent.
 Известные ограничения (проверено на стартовом уровне)
 -----------------------------------------------------
 * Проверены: создание второго Моно, разделение экрана, ходьба/спринт (X)/
-  камера/прыжок (A) со второго пада, постановка на пол. Полное прохождение
-  вдвоём ещё не пройдено.
-* Подбор предметов и взаимодействия второго игрока (захват, подъём, двери,
-  рычаги) НЕ работают — игра выполняет свои действия только для первого
-  игрока.
+  камера/прыжок (A) со второго пада, постановка на пол и подбор предметов
+  (RT) в тестовой копии. Полное прохождение вдвоём ещё не пройдено.
+* Подбор предметов работает; бросок пока заменён на «положить» (прямой
+  TryThrow/TryPutdown у второго игрока роняет игру). Захват, двери, рычаги
+  и кнопки для второго игрока ещё не подключены.
 * Сюжетные скрипты, двери, лифты и враги рассчитаны на одного игрока.
   Если где-то второй игрок останется за дверью/в лифте — это ограничение
   мода, а не поломка; перезапуск уровня помогает.
@@ -117,8 +123,8 @@ UE4SS.dll.orig, если хотите оставить UE4SS без патча).
 
 ------------------------------------------------------------------------------
 
-LN2Coop 0.6.2 — English
-----------------------
+LN2Coop 0.7 — English
+---------------------
 Same-PC split-screen co-op for Little Nightmares II (Enhanced Edition).
 Player 2 is a second Mono: the game's own game mode spawns a second
 BP_PlayerPawn with its own controller and camera. Six is never touched and
@@ -128,12 +134,14 @@ Connect both gamepads before launching. Start the game normally, continue,
 and once a level loads the second Mono appears and the screen splits.
 
 Player 2 controls: left stick walks (the model turns towards the walk direction),
-X sprints, right stick turns the camera, A jumps.
+X sprints, right stick turns the camera, A jumps, RT picks up / puts down an item.
 The game runs none of its own actions for player 2, so the mod reads pad 2
 and drives the pawn itself (CharacterMovement.Velocity, SetControlRotation,
 MOVE_Falling + vertical velocity). The raw stick axes are inverted on this
-build, so both movement axes are flipped. Picking up items and other
-interactions (grab, doors, levers) are not wired yet. Player 2 is placed
+build, so both movement axes are flipped. Picking up works through the game's
+own PickupComponent for items within 3.5 m; throwing is currently replaced by
+"put down" because the direct TryThrow/TryPutdown calls crashed the game for
+player 2. Grabbing, doors and levers are not wired yet. Player 2 is placed
 exactly on player 1's known-good floor spot and will overlap player 1 until
 you move the left stick.
 
@@ -147,6 +155,7 @@ untouched original; patch_ue4ss.ps1 re-applies the patch.
 
 Tested: second Mono creation, split screen, placement, level start, walking
 forward/back/strafe from pad 2, the model turning towards the walk direction,
-sprint on X, camera yaw, jump on A, on the user's installed game. Picking up
-items and other interactions do not work yet; doors, lifts and enemies are
-still single-player logic. The game pauses when its window loses focus.
+sprint on X, camera yaw, jump on A, and picking up a carryable with RT in the
+isolated test copy. Throwing is replaced by putting the item down; grabbing,
+doors, lifts and enemies are still single-player logic. The game pauses when
+its window loses focus.
