@@ -61,6 +61,8 @@ local CONFIG = {
     animStates = false,
     -- bones probing (foot/hand positions) - useful, but it is another engine call path
     animBones = false,
+    -- one-shot dump of the pawn's components and the pose getters that answer
+    animInspect = true,
     -- reflection dump of the mesh/anim class functions (names only, no calls)
     animFuncs = false,
     -- player 1's Mono turns to face the direction it walks (its yaw follows the control
@@ -279,6 +281,72 @@ local function dumpClassFuncs(obj, label, keywords)
         table.concat(hits, ","))
 end
 
+-- One-shot inspection of everything that can carry an animated body: which components the
+-- pawn actually has, which of them are visible, and whether any bone/pose getter answers.
+local function inspectPawn(pawn, label)
+    if not CONFIG.animInspect then return end
+    adiag("[inspect %s] %s", label, fullName(pawn))
+    local cls = nil
+    pcall(function() cls = StaticFindObject("/Script/Engine.SkeletalMeshComponent") end)
+    local comps, okc = nil, false
+    if isLive(cls) then
+        okc = pcall(function() comps = pawn:K2_GetComponentsByClass(cls) end)
+    end
+    adiag("  skel comps ok=%s type=%s n=%s", tostring(okc), type(comps),
+        type(comps) == "table" and tostring(#comps) or "-")
+    if type(comps) == "table" then
+        for i, c in ipairs(comps) do
+            if i > 8 then break end
+            local visible, animCls, master, smesh = nil, nil, nil, nil
+            pcall(function() visible = c.bVisible end)
+            pcall(function() animCls = c.AnimClass end)
+            pcall(function() master = c.MasterPoseComponent end)
+            pcall(function() smesh = c.SkeletalMesh end)
+            adiag("  comp[%d] %s visible=%s animClass=%s master=%s mesh=%s",
+                i, shortName(c), tostring(visible),
+                isLive(animCls) and fullName(animCls) or tostring(animCls),
+                isLive(master) and shortName(master) or tostring(master),
+                isLive(smesh) and shortName(smesh) or tostring(smesh))
+        end
+    end
+    local mv = movementComp(pawn)
+    if mv then
+        local a = nil
+        pcall(function() a = mv:GetCurrentAcceleration() end)
+        adiag("  acc=%s", vecText(a))
+    end
+    -- can any pose getter be called at all?
+    local mesh = nil
+    pcall(function() mesh = pawn.Mesh end)
+    if isLive(mesh) then
+        local fn = nil
+        pcall(function() fn = mesh:GetBoneName(4) end)
+        local ok1, r1 = pcall(function() return mesh:GetBoneLocation(fn) end)
+        adiag("  GetBoneLocation(fname) ok=%s type=%s val=%s", tostring(ok1), type(r1), tostring(r1))
+        local ok2, r2 = pcall(function() return mesh:GetBoneLocation("skinned_l_ped_bn") end)
+        adiag("  GetBoneLocation(str) ok=%s type=%s val=%s", tostring(ok2), type(r2), tostring(r2))
+        local ok3, r3 = pcall(function() return mesh:GetBoneMatrix(4) end)
+        adiag("  GetBoneMatrix(4) ok=%s type=%s val=%s", tostring(ok3), type(r3), tostring(r3))
+        -- GetSocketTransform / GetLocalBounds / GetComponentSpaceTransforms crashed the
+        -- game on this build: do not call them again.
+        adiag("  animMode=%s bPauseAnims=%s bNoSkelUpdate=%s vbao=%s",
+            tostring(objProp(mesh, "AnimationMode")), tostring(objProp(mesh, "bPauseAnims")),
+            tostring(objProp(mesh, "bNoSkeletonUpdate")),
+            tostring(objProp(mesh, "VisibilityBasedAnimTickOption")))
+        local ai = nil
+        pcall(function() ai = mesh.AnimScriptInstance end)
+        if isLive(ai) then
+            for _, f in ipairs({ "bIsActive", "bInitialized", "bIsInitialized", "bNeedsUpdate",
+                    "bPoseIsDirty", "bIsPlaying", "bIsDesiredPlaying", "LastUpdateTime",
+                    "bPendingUpdate", "bQueueUpdate" }) do
+                adiag("  ai.%s=%s", f, tostring(objProp(ai, f)))
+            end
+            adiag("  ai class=%s owningMesh=%s", fullName(ai:GetClass()),
+                tostring(select(2, pcall(function() return ai:GetSkelMeshComponent() end))))
+        end
+    end
+end
+
 local function pickDiagBones(mesh)
     local ok, num = pcall(function() return mesh:GetNumBones() end)
     adiag("  [bones] num ok=%s val=%s", tostring(ok), tostring(num))
@@ -305,13 +373,13 @@ local function pickDiagBones(mesh)
     return picked
 end
 
+-- the two-argument form (FName, space) does not answer on this build; try the short form
 local function boneLoc(mesh, entry)
-    local loc, err = nil, nil
-    local ok = pcall(function() loc = mesh:GetBoneLocation(entry.fname, 1) end)
-    if not ok or loc == nil then
-        ok = pcall(function() loc = mesh:GetBoneLocation(entry.name, 1) end)
-    end
-    return loc, err
+    local loc = nil
+    pcall(function() loc = mesh:GetBoneLocation(entry.fname) end)
+    if loc == nil then pcall(function() loc = mesh:GetBoneLocation(entry.name) end) end
+    if loc == nil then pcall(function() loc = mesh:GetBoneLocation(entry.fname, 1) end) end
+    return loc
 end
 
 local function animStateNames(ai)
@@ -376,6 +444,23 @@ local function dumpAnimState(tag, p1, p2)
                 isLive(ai) and animNum(ai, "InGroundedIdleMove") or "-",
                 mv and moveMode(mv) or "?",
                 isLive(ai) and "ok" or "nil")
+            if isLive(ai) then
+                -- which anim variables a really walking player 1 has, and player 2 lacks
+                adiag("  p%d vars: locAng=%s spdRatio=%s walkStart=%s velAng=%s desDelta=%s sprintAlpha=%s ppAnim=%s",
+                    i,
+                    animNum(ai, "LocomotionAngle"), animNum(ai, "SpeedRatio"),
+                    animNum(ai, "WalkStartRatio"), animNum(ai, "VelocityAngle"),
+                    animNum(ai, "DesiredDeltaRotation"), animNum(ai, "Interped Sprint Alpha"),
+                    animNum(ai, "PP Should Animate"))
+            end
+            if CONFIG.animBones and isLive(mesh) then
+                if not diagBones[key] then diagBones[key] = pickDiagBones(mesh) end
+                local samples = {}
+                for _, bn in ipairs(diagBones[key]) do
+                    samples[#samples + 1] = bn.name .. "=" .. vecText(boneLoc(mesh, bn))
+                end
+                adiag("  p%d bone: %s", i, table.concat(samples, " "))
+            end
             if CONFIG.animDeep then
                 adiag("  [deep] pawn=%s", shortName(pawn))
                 local last, pend = nil, nil
@@ -690,6 +775,8 @@ local function upkeep()
     local pawnName = fullName(p2.pawn)
     if lastPlacedPawn ~= pawnName then
         placePlayer2(p1, p2, "level start")
+        inspectPawn(p1.pawn, "p1")
+        inspectPawn(p2.pawn, "p2")
         dumpAnimState("placed", p1, p2)
         return
     end
@@ -730,6 +817,7 @@ local BRIDGE = {
     jumpProbeAt = nil,
     jumpProbeN = 0,
     testActive = false,
+    paused = false,
     testNextRead = 0,
     lastDiag = 0,
     lastAnimDiag = 0,
@@ -876,6 +964,20 @@ local function readTestDrive()    local t = now()
         return nil
     end
     local v = {
+        -- test-only: freeze the game so two screenshots can be compared pose to pose
+        pause = (nums[8] or 0) ~= 0,
+        -- test-only: reverse the walk direction every tick, so the pawn keeps a high
+        -- speed for the animation but stays in place (pose probe with a static camera)
+        jitter = (nums[9] or 0) ~= 0,
+        -- test-only: also write CharacterMovement.Acceleration (the game computes its
+        -- animation from acceleration, which a Velocity write never fills)
+        accel = (nums[10] or 0) ~= 0,
+        -- test-only: rebuild the anim instance on player 2's mesh
+        reinit = (nums[11] or 0) ~= 0,
+        -- test-only: zoom player 2's camera (FOV), so its pose is big enough to judge
+        fov = nums[12] or 0,
+        -- test-only: scale player 2's mesh up, so its pose is big enough to judge
+        scale = nums[13] or 0,
         mx = math.max(-1, math.min(1, nums[1] or 0)),
         my = math.max(-1, math.min(1, nums[2] or 0)),
         rx = math.max(-1, math.min(1, nums[3] or 0)),
@@ -1055,6 +1157,15 @@ local function bridgeStep()
     local dt = CONFIG.bridgeInterval / 1000.0
 
     local mx, my, rx, ry, jump, sprint, isTest, p1too = readSticks(pc)
+    -- test-only game pause, used by the pose comparison screenshots
+    local td = readTestDrive()
+    if td then
+        if td.pause ~= BRIDGE.paused then
+            BRIDGE.paused = td.pause
+            local okp = pcall(function() gs:SetGamePaused(pawn, td.pause) end)
+            log("test pause: %s ok=%s", tostring(td.pause), tostring(okp))
+        end
+    end
     -- sprint comes from readSticks: X button on the pad, or the test-drive file
     if sprint ~= BRIDGE.lastSprint then
         BRIDGE.lastSprint = sprint
@@ -1077,8 +1188,52 @@ local function bridgeStep()
     end
     applyCamera(pc, rx, ry, dt)
 
+    if td and td.fov and td.fov > 0 and td.fov ~= BRIDGE.fov then
+        BRIDGE.fov = td.fov
+        local cam = nil
+        pcall(function() cam = pc.PlayerCameraManager end)
+        local ok1 = false
+        if isLive(cam) then ok1 = pcall(function() cam:SetFOV(td.fov) end) end
+        log("test fov: %.0f ok=%s", td.fov, tostring(ok1))
+    end
+
+    if td and td.scale and td.scale > 0 and td.scale ~= BRIDGE.scale then
+        BRIDGE.scale = td.scale
+        local mesh = nil
+        pcall(function() mesh = pawn.Mesh end)
+        local oks = false
+        if isLive(mesh) then
+            oks = pcall(function() mesh:SetRelativeScale3D({ X = td.scale, Y = td.scale, Z = td.scale }) end)
+        end
+        log("test scale: %.2f ok=%s", td.scale, tostring(oks))
+    end
+
+    if td and td.reinit and not BRIDGE.reinitDone then
+        BRIDGE.reinitDone = true
+        local mesh = nil
+        pcall(function() mesh = pawn.Mesh end)
+        local cls = nil
+        pcall(function() cls = mesh.AnimClass end)
+        local okr = pcall(function() mesh:SetAnimInstanceClass(cls) end)
+        log("test reinit anim class ok=%s class=%s", tostring(okr), tostring(cls))
+    end
+
     local moving = (mx ~= 0.0 or my ~= 0.0)
-    if moving then
+    if moving and td and td.jitter then
+        if td.accel then
+            local mv2 = movementComp(pawn)
+            local ddx, ddy = moveDirection(pc, mx, my)
+            if mv2 then
+                pcall(function()
+                    mv2.Acceleration = { X = ddx * 2000.0, Y = ddy * 2000.0, Z = 0.0 }
+                end)
+            end
+        end
+        -- keep the speed, cancel the travel, and leave the facing alone
+        BRIDGE.jitterSign = -(BRIDGE.jitterSign or 1)
+        local dx, dy = moveDirection(pc, mx, my)
+        drivePawn(pawn, dx * BRIDGE.jitterSign, dy * BRIDGE.jitterSign, dt, sprint)
+    elseif moving then
         local dx, dy = moveDirection(pc, mx, my)
         drivePawn(pawn, dx, dy, dt, sprint)
         faceDirection(pawn, dx, dy, dt)

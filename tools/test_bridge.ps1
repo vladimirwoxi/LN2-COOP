@@ -12,7 +12,7 @@
 #            human can move the second gamepad.
 
 param(
-    [ValidateSet("auto", "pad", "quick", "jump", "sprint", "anim", "pose")][string]$Mode = "auto",
+    [ValidateSet("auto", "pad", "quick", "jump", "sprint", "anim", "pose", "pad1", "pose2", "pose3", "pose4", "pose5", "pose6")][string]$Mode = "auto",
     [int]$PadSeconds = 12,
     [string]$Bin = "G:\LN2\test-install\Helios\Binaries\Win64",
     [string]$OutDir = "G:\LN2\local",
@@ -244,6 +244,131 @@ if ($Mode -eq "auto") {
     Start-Sleep -Milliseconds 1000
     Shot "pose-final"
     Start-Sleep -Milliseconds 300
+} elseif ($Mode -eq "pad1") {
+    # walk player 1 with the keyboard: gives a reference for what a really walking pawn
+    # puts into its animation blueprint
+    Say "player 1 walk test: holding W for 6 s"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $winPs1 -Action hold -Keys W -Seconds 6 | Out-Null
+    Start-Sleep -Seconds 2
+    Say "player 1 stop"
+} elseif ($Mode -eq "pose2") {
+    # freeze the game mid-walk and compare two frozen frames: if the pose changes, the
+    # walk cycle is playing; if the frames are identical, the mesh is a frozen statue
+    Say "pose2 test: paused frames of a walking player 2"
+    Start-Sleep -Seconds 6
+    Set-Test "0,1,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 1200
+    Set-Test "0,1,0,0,0,0,0,1"
+    Start-Sleep -Milliseconds 500
+    Shot "poseA"
+    Set-Test "0,1,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 180
+    Set-Test "0,1,0,0,0,0,0,1"
+    Start-Sleep -Milliseconds 500
+    Shot "poseB"
+    Set-Test "0,0,0,0,0,0,0,1"
+    Start-Sleep -Milliseconds 400
+    Shot "poseC"
+    Set-Test "0,0,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 400
+} elseif ($Mode -eq "pose3") {
+    # walk on the spot (direction reversed every bridge tick) and freeze three frames:
+    # same position, same facing, so any difference between the frames is the pose itself
+    Say "pose3 test: paused frames of player 2 walking on the spot"
+    Start-Sleep -Seconds 6
+    Set-Test "0,1,0,0,0,0,0,0,1"
+    Start-Sleep -Milliseconds 1500
+    Set-Test "0,1,0,0,0,0,0,1,1"
+    Start-Sleep -Milliseconds 500
+    Shot "jitA"
+    Set-Test "0,1,0,0,0,0,0,0,1"
+    Start-Sleep -Milliseconds 200
+    Set-Test "0,1,0,0,0,0,0,1,1"
+    Start-Sleep -Milliseconds 500
+    Shot "jitB"
+    Set-Test "0,1,0,0,0,0,0,0,1"
+    Start-Sleep -Milliseconds 230
+    Set-Test "0,1,0,0,0,0,0,1,1"
+    Start-Sleep -Milliseconds 500
+    Shot "jitC"
+    Set-Test "0,0,0,0,0,0,0,1,0"
+    Start-Sleep -Milliseconds 400
+    Shot "jitStop"
+    Set-Test "0,0,0,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 400
+} elseif ($Mode -eq "pose4") {
+    # three frozen frames of a pawn walking on the spot: baseline, with Acceleration
+    # written as well, and after rebuilding the anim instance
+    Say "pose4 test: jitter baseline / acceleration / anim reinit"
+    Start-Sleep -Seconds 6
+    Set-Test "0,1,0,0,0,0,0,0,1,0,0"
+    Start-Sleep -Milliseconds 1500
+    Set-Test "0,1,0,0,0,0,0,1,1,0,0"
+    Start-Sleep -Milliseconds 500
+    Shot "jitBase"
+    Set-Test "0,1,0,0,0,0,0,0,1,1,0"
+    Start-Sleep -Milliseconds 600
+    Set-Test "0,1,0,0,0,0,0,1,1,1,0"
+    Start-Sleep -Milliseconds 500
+    Shot "jitAcc"
+    Set-Test "0,1,0,0,0,0,0,0,1,0,1"
+    Start-Sleep -Milliseconds 800
+    Set-Test "0,1,0,0,0,0,0,1,1,0,1"
+    Start-Sleep -Milliseconds 500
+    Shot "jitReinit"
+    Set-Test "0,0,0,0,0,0,0,1,0,0,1"
+    Start-Sleep -Milliseconds 400
+    Shot "jitReinitStop"
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 400
+} elseif ($Mode -eq "pose5") {
+    # zoom player 2's camera and freeze three frames of a walk on the spot
+    Say "pose5 test: zoomed p2 camera, three frozen walk frames"
+    Start-Sleep -Seconds 6
+    Set-Test "0,1,0,0,0,0,0,0,1,0,0,20"
+    Start-Sleep -Milliseconds 1500
+    Set-Test "0,1,0,0,0,0,0,1,1,0,0,20"
+    Start-Sleep -Milliseconds 500
+    Shot "zoomA"
+    Set-Test "0,1,0,0,0,0,0,0,1,0,0,20"
+    Start-Sleep -Milliseconds 160
+    Set-Test "0,1,0,0,0,0,0,1,1,0,0,20"
+    Start-Sleep -Milliseconds 500
+    Shot "zoomB"
+    Set-Test "0,1,0,0,0,0,0,0,1,0,0,20"
+    Start-Sleep -Milliseconds 190
+    Set-Test "0,1,0,0,0,0,0,1,1,0,0,20"
+    Start-Sleep -Milliseconds 500
+    Shot "zoomC"
+    Set-Test "0,0,0,0,0,0,0,1,0,0,0,20"
+    Start-Sleep -Milliseconds 500
+    Shot "zoomStop"
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 400
+} elseif ($Mode -eq "pose6") {
+    # scale player 2's mesh up and freeze three walk frames: the pose is big enough to see
+    Say "pose6 test: scaled-up p2, three frozen walk frames"
+    Start-Sleep -Seconds 6
+    Set-Test "0,1,0,0,0,0,0,0,1,0,0,0,3"
+    Start-Sleep -Milliseconds 1500
+    Set-Test "0,1,0,0,0,0,0,1,1,0,0,0,3"
+    Start-Sleep -Milliseconds 500
+    Shot "sclA"
+    Set-Test "0,1,0,0,0,0,0,0,1,0,0,0,3"
+    Start-Sleep -Milliseconds 170
+    Set-Test "0,1,0,0,0,0,0,1,1,0,0,0,3"
+    Start-Sleep -Milliseconds 500
+    Shot "sclB"
+    Set-Test "0,1,0,0,0,0,0,0,1,0,0,0,3"
+    Start-Sleep -Milliseconds 210
+    Set-Test "0,1,0,0,0,0,0,1,1,0,0,0,3"
+    Start-Sleep -Milliseconds 500
+    Shot "sclC"
+    Set-Test "0,0,0,0,0,0,0,1,0,0,0,0,3"
+    Start-Sleep -Milliseconds 500
+    Shot "sclStop"
+    Set-Test "0,0,0,0,0,0,0,0,0,0,0,0,0"
+    Start-Sleep -Milliseconds 400
 } elseif ($Mode -eq "jump") {
     Say "jump test: jump, then press A again in the air (must not stack)"
     Set-Test "0,0,0,0,1"
